@@ -160,20 +160,32 @@ main {
 .granularity-btn.active { background: var(--ocean); color: var(--paper); }
 
 /* ---------- Secciones por propiedad ---------- */
-.property-block { margin-bottom: 40px; }
-.property-header {
+.property-tabs {
   display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin-bottom: 14px;
+  gap: 4px;
+  margin-bottom: 24px;
+  border-bottom: 1px solid var(--line);
 }
-.property-title {
+.property-tab-btn {
   font-family: 'Fraunces', serif;
+  font-size: 17px;
   font-weight: 500;
-  font-size: 22px;
-  margin: 0;
+  padding: 10px 20px 12px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: color 0.15s ease;
 }
-.property-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ocean-light); }
+.property-tab-btn:hover { color: var(--ink); }
+.property-tab-btn.active { color: var(--ink); border-bottom-color: var(--ocean); }
+.property-block { margin-bottom: 40px; }
+.property-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ocean-light); flex-shrink: 0; }
 .property-dot[data-property="Holbox"] { background: var(--clay); }
 
 /* ---------- KPIs ---------- */
@@ -365,6 +377,8 @@ footer {
       <button class="granularity-btn" data-granularity="month">Mensual</button>
     </div>
   </section>
+
+  <div id="property-tabs" class="property-tabs"><!-- Se genera dinámicamente --></div>
 
   <div id="property-sections"><!-- Se genera dinámicamente: una sección completa por plaza --></div>
 
@@ -717,10 +731,6 @@ function buildPropertySections() {
     const s = slug(prop);
     return `
     <section class="property-block" data-property="${escapeHtml(prop)}">
-      <div class="property-header">
-        <span class="property-dot" data-property="${escapeHtml(prop)}"></span>
-        <h2 class="property-title">${escapeHtml(prop)}</h2>
-      </div>
 
       <div class="kpi-grid" aria-label="Indicadores clave — ${escapeHtml(prop)}">
         <div class="kpi-card"><div class="gauge"></div><p class="kpi-label">Inversión total</p><p class="kpi-value" id="kpi-spend-${s}">—</p></div>
@@ -739,6 +749,28 @@ function buildPropertySections() {
         <div class="panel">
           <h2>Inversión por etapa del funnel</h2>
           <div class="chart-wrap"><canvas id="chart-funnel-${s}"></canvas></div>
+        </div>
+      </div>
+
+      <div class="table-panel" style="margin-bottom:20px;">
+        <h2>Mejor anuncio por campaña</h2>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Campaña</th>
+                <th>Anuncio</th>
+                <th>AdSet</th>
+                <th class="num">Inversión</th>
+                <th class="num">Leads</th>
+                <th class="num">CPL</th>
+                <th class="num">CTR</th>
+              </tr>
+            </thead>
+            <tbody id="top-ads-body-${s}">
+              <tr><td colspan="7" class="empty">Cargando datos…</td></tr>
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -767,11 +799,54 @@ function buildPropertySections() {
   }).join("");
 }
 
+function buildPropertyTabs() {
+  const properties = getProperties();
+  const container = document.getElementById("property-tabs");
+  container.innerHTML = properties.map((prop, i) => `
+    <button class="property-tab-btn${i === 0 ? " active" : ""}" data-property="${escapeHtml(prop)}">
+      <span class="property-dot" data-property="${escapeHtml(prop)}"></span>
+      ${escapeHtml(prop)}
+    </button>
+  `).join("");
+
+  container.querySelectorAll(".property-tab-btn").forEach((btn) => {
+    btn.addEventListener("click", () => showPropertyTab(btn.dataset.property));
+  });
+}
+
+function showPropertyTab(prop) {
+  state.activeProperty = prop;
+  const properties = getProperties();
+
+  properties.forEach((p) => {
+    const section = document.querySelector(`.property-block[data-property="${cssEscape(p)}"]`);
+    if (section) section.style.display = p === prop ? "" : "none";
+  });
+
+  document.querySelectorAll(".property-tab-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.property === prop);
+  });
+
+  // Chart.js calcula el tamaño del canvas al crearlo; si estaba oculto (display:none)
+  // queda con tamaño 0. Al mostrar la pestaña, forzamos un resize para que se dibuje bien.
+  const s = slug(prop);
+  requestAnimationFrame(() => {
+    if (state.charts[`trend-${s}`]) state.charts[`trend-${s}`].resize();
+    if (state.charts[`funnel-${s}`]) state.charts[`funnel-${s}`].resize();
+  });
+}
+
+function cssEscape(s) {
+  return (window.CSS && CSS.escape) ? CSS.escape(s) : s.replace(/["\\]/g, "\\$&");
+}
+
 function populateFilterOptions() {
   const funnels = uniqueSorted(state.raw.map((r) => r.funnel));
   const objectives = uniqueSorted(state.raw.map((r) => r.objective));
 
   buildPropertySections();
+  buildPropertyTabs();
+  showPropertyTab(getProperties()[0]);
   fillSelect("filter-funnel", funnels, "Todas las etapas");
   fillSelect("filter-objective", objectives, "Todos los objetivos");
 
@@ -889,6 +964,40 @@ function groupByCampaign(rows) {
     .sort((a, b) => b.spend - a.spend);
 }
 
+// Agrupa por campaña + adset + anuncio, usando exactamente las mismas filas que
+// ya trae la query de Data Slayer (columna "Ad name") — sin fuentes nuevas.
+function groupByCreative(rows) {
+  const map = new Map();
+  for (const r of rows) {
+    if (!r.ad) continue; // filas sin desglose de anuncio (subtotales, etc.)
+    const key = `${r.campaign}|||${r.adset}|||${r.ad}`;
+    if (!map.has(key)) map.set(key, { campaign: r.campaign, adset: r.adset, ad: r.ad, rows: [] });
+    map.get(key).rows.push(r);
+  }
+  return Array.from(map.values()).map((g) => ({ ...g, ...computeKpis(g.rows) }));
+}
+
+// Para cada campaña, elige el anuncio con mejor desempeño:
+// - Si algún anuncio de la campaña ya generó leads, gana el de menor CPL.
+// - Si ninguno tiene leads todavía, gana el de mayor CTR (mejor señal temprana).
+function bestAdPerCampaign(rows) {
+  const creatives = groupByCreative(rows);
+  const byCampaign = new Map();
+  for (const c of creatives) {
+    if (!byCampaign.has(c.campaign)) byCampaign.set(c.campaign, []);
+    byCampaign.get(c.campaign).push(c);
+  }
+  const result = [];
+  for (const [campaign, list] of byCampaign.entries()) {
+    const withLeads = list.filter((c) => c.leads > 0);
+    const best = withLeads.length
+      ? withLeads.reduce((a, b) => (a.cpl <= b.cpl ? a : b))
+      : list.reduce((a, b) => (a.ctr >= b.ctr ? a : b));
+    result.push({ campaign, ...best });
+  }
+  return result.sort((a, b) => b.spend - a.spend);
+}
+
 // ---------- 6. RENDER ----------
 
 const fmtMoney = (n) => "$" + n.toLocaleString("es-MX", { maximumFractionDigits: 0 });
@@ -904,6 +1013,7 @@ function renderAll() {
     renderKpis(rows, s);
     renderTrendChart(rows, s);
     renderFunnelChart(rows, s);
+    renderTopAds(rows, s);
     renderTable(rows, s);
   }
   document.getElementById("last-update").textContent =
@@ -1073,6 +1183,23 @@ function renderFunnelChart(rows, s) {
       },
     },
   });
+}
+
+function renderTopAds(rows, s) {
+  const best = bestAdPerCampaign(rows);
+  const tbody = document.getElementById(`top-ads-body-${s}`);
+  if (!tbody) return;
+  tbody.innerHTML = best.map((b) => `
+    <tr>
+      <td class="col-campaign">${escapeHtml(b.campaign)}</td>
+      <td>${escapeHtml(b.ad)}</td>
+      <td>${escapeHtml(b.adset)}</td>
+      <td class="num">${fmtMoney2(b.spend)}</td>
+      <td class="num">${fmtNum(b.leads)}</td>
+      <td class="num">${b.leads > 0 ? fmtMoney2(b.cpl) : "—"}</td>
+      <td class="num">${fmtPct(b.ctr)}</td>
+    </tr>
+  `).join("") || `<tr><td colspan="7" class="empty">Sin datos para este filtro.</td></tr>`;
 }
 
 function renderTable(rows, s) {
