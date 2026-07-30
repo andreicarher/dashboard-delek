@@ -270,6 +270,11 @@ td.num, th.num { text-align: right; font-family: 'IBM Plex Mono', monospace; fon
   flex-direction: column;
   gap: 10px;
 }
+/* El atributo [hidden] del navegador pierde contra el display:flex de arriba
+   (misma especificidad, pero esta regla va después). Forzamos que gane. */
+#loading-overlay[hidden] {
+  display: none !important;
+}
 .spinner {
   width: 22px; height: 22px;
   border: 2px solid var(--sand);
@@ -515,8 +520,10 @@ let __gvizCounter = 0;
 function fetchSheetTab(spreadsheetId, sheetName) {
   return new Promise((resolve, reject) => {
     const cbName = `__gvizCb_${__gvizCounter++}`;
+    // El parámetro _ts evita que el navegador sirva una respuesta cacheada
+    // de un intento fallido anterior.
     const url = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq` +
-      `?sheet=${encodeURIComponent(sheetName)}&tqx=out:json;responseHandler:${cbName}`;
+      `?sheet=${encodeURIComponent(sheetName)}&tqx=out:json;responseHandler:${cbName}&_ts=${Date.now()}`;
 
     let settled = false;
     window[cbName] = (resp) => {
@@ -540,6 +547,24 @@ function fetchSheetTab(spreadsheetId, sheetName) {
       if (!settled) { cleanup(); reject(new Error(`Tiempo de espera agotado leyendo "${sheetName}".`)); }
     }, 15000);
   });
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Google Sheets a veces falla momentáneamente (ej. mientras Data Slayer
+// está refrescando la query). Reintentamos un par de veces antes de
+// mostrar un error al usuario.
+async function fetchSheetTabWithRetry(spreadsheetId, sheetName, attempts = 3) {
+  let lastError;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fetchSheetTab(spreadsheetId, sheetName);
+    } catch (err) {
+      lastError = err;
+      if (i < attempts - 1) await sleep(1200 * (i + 1)); // espera creciente entre intentos
+    }
+  }
+  throw lastError;
 }
 
 // ---------- 2. NORMALIZACIÓN ----------
@@ -679,7 +704,7 @@ function normalizeSource(resp, source) {
 async function loadAllData() {
   const cfg = DASHBOARD_CONFIG;
   const results = await Promise.allSettled(
-    cfg.sources.map((s) => fetchSheetTab(cfg.spreadsheetId, s.sheetName).then((r) => normalizeSource(r, s)))
+    cfg.sources.map((s) => fetchSheetTabWithRetry(cfg.spreadsheetId, s.sheetName).then((r) => normalizeSource(r, s)))
   );
 
   let combined = [];
