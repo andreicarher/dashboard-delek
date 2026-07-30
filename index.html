@@ -638,7 +638,10 @@ function normalizeSource(resp, source) {
     out.push({
       source: source.id,
       channel: source.channel,
-      property: toText(cellValue(row, idx.plaza)) || source.property,
+      // Priorizamos la propiedad definida en config.sources (consistente con las
+      // secciones que arma buildPropertySections). La columna PLAZA del Sheet
+      // puede venir en mayúsculas ("TULUM") y no debe romper el match.
+      property: source.property || toText(cellValue(row, idx.plaza)),
       date,
       month: monthNum,
       week: toNumber(cellValue(row, idx.week)) || null,
