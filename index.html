@@ -863,6 +863,39 @@ function buildPropertySections() {
         </div>
       </div>
 
+      <div class="panel" style="margin-bottom:28px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:14px;">
+          <h2 style="margin:0;">Desempeño geográfico <span class="tag" style="margin-left:6px;">vía Meta Ads API</span></h2>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <select id="geo-days-${s}" style="font-family:'Inter',sans-serif; font-size:12.5px; padding:5px 8px; border-radius:6px; border:1px solid var(--line); background:var(--paper);">
+              <option value="7">Últimos 7 días</option>
+              <option value="30" selected>Últimos 30 días</option>
+              <option value="90">Últimos 90 días</option>
+            </select>
+            <button class="btn" id="geo-refresh-${s}" style="padding:5px 14px; font-size:12.5px;">Actualizar</button>
+          </div>
+        </div>
+        <div class="table-scroll" style="max-height:320px;">
+          <table>
+            <thead>
+              <tr>
+                <th>Región</th>
+                <th class="num">Inversión</th>
+                <th class="num">Impresiones</th>
+                <th class="num">Alcance</th>
+                <th class="num">CTR</th>
+                <th class="num">Leads</th>
+                <th class="num">CPL</th>
+              </tr>
+            </thead>
+            <tbody id="geo-body-${s}">
+              <tr><td colspan="7" class="empty">Sin conectar todavía — ver nota abajo.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p id="geo-note-${s}" style="color:var(--muted); font-size:12.5px; margin:10px 0 0;"></p>
+      </div>
+
       <div class="table-panel" style="margin-bottom:20px;">
         <h2>Mejor anuncio por campaña</h2>
         <div class="table-scroll">
@@ -959,6 +992,7 @@ function populateFilterOptions() {
   buildPropertySections();
   buildPropertyTabs();
   showPropertyTab(getProperties()[0]);
+  bindGeoPanelEvents();
   fillSelect("filter-funnel", funnels, "Todas las etapas");
   fillSelect("filter-objective", objectives, "Todos los objetivos");
 
@@ -1332,6 +1366,79 @@ function renderPacing(prop, s) {
         : "Ritmo de gasto saludable respecto al presupuesto mensual."}
     </p>
   `;
+}
+
+// ---------- Panel geográfico (vía Meta Ads API, /api/meta-geo) ----------
+// Este panel es independiente del Google Sheet: llama a nuestra propia
+// función serverless, que a su vez llama a la API de Meta con el token
+// guardado como secreto en Vercel. Si el token todavía no está configurado,
+// mostramos un mensaje claro en vez de romper el dashboard.
+
+function bindGeoPanelEvents() {
+  for (const prop of getProperties()) {
+    const s = slug(prop);
+    const daysSelect = document.getElementById(`geo-days-${s}`);
+    const refreshBtn = document.getElementById(`geo-refresh-${s}`);
+    if (refreshBtn) {
+      refreshBtn.addEventListener("click", () => {
+        loadGeoPanel(prop, s, parseInt(daysSelect?.value, 10) || 30);
+      });
+    }
+    if (daysSelect) {
+      daysSelect.addEventListener("change", () => {
+        loadGeoPanel(prop, s, parseInt(daysSelect.value, 10) || 30);
+      });
+    }
+    // Primera carga automática al abrir el dashboard.
+    loadGeoPanel(prop, s, 30);
+  }
+}
+
+async function loadGeoPanel(prop, s, days = 30) {
+  const tbody = document.getElementById(`geo-body-${s}`);
+  const note = document.getElementById(`geo-note-${s}`);
+  if (!tbody) return;
+
+  tbody.innerHTML = `<tr><td colspan="7" class="empty">Consultando la API de Meta Ads…</td></tr>`;
+  if (note) note.textContent = "";
+
+  try {
+    const resp = await fetch(`/api/meta-geo?property=${encodeURIComponent(prop)}&days=${days}`);
+    const json = await resp.json();
+
+    if (!resp.ok) {
+      if (resp.status === 501) {
+        tbody.innerHTML = `<tr><td colspan="7" class="empty">Aún no configurado.</td></tr>`;
+        if (note) note.textContent = "Falta agregar META_ACCESS_TOKEN en las variables de entorno de Vercel (ver README).";
+      } else {
+        tbody.innerHTML = `<tr><td colspan="7" class="empty">No se pudo leer Meta Ads.</td></tr>`;
+        if (note) note.textContent = json.error || "Error desconocido consultando la API.";
+      }
+      return;
+    }
+
+    const rows = json.rows || [];
+    tbody.innerHTML = rows.map((r) => `
+      <tr>
+        <td class="col-campaign">${escapeHtml(r.region)}</td>
+        <td class="num">${fmtMoney2(r.spend)}</td>
+        <td class="num">${fmtNum(r.impressions)}</td>
+        <td class="num">${fmtNum(r.reach)}</td>
+        <td class="num">${fmtPct(r.ctr)}</td>
+        <td class="num">${fmtNum(r.leads)}</td>
+        <td class="num">${r.leads > 0 ? fmtMoney2(r.spend / r.leads) : "—"}</td>
+      </tr>
+    `).join("") || `<tr><td colspan="7" class="empty">Sin datos para este rango.</td></tr>`;
+
+    if (note) {
+      note.textContent = json.cached
+        ? "Datos en caché (se refresca cada 30 min) — vía API de Meta, independiente del Google Sheet."
+        : "Datos recién consultados — vía API de Meta, independiente del Google Sheet.";
+    }
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="7" class="empty">No se pudo conectar con /api/meta-geo.</td></tr>`;
+    if (note) note.textContent = "Esto es normal si aún no lo has desplegado en Vercel con la carpeta /api incluida.";
+  }
 }
 
 function destroyChart(name) {
