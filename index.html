@@ -1385,6 +1385,12 @@ function renderTrendChart(rows, s) {
   const ctx = canvas.getContext("2d");
   destroyChart(`trend-${s}`);
 
+  // Dejamos ~30% de aire arriba del valor más alto de cada eje, para que la
+  // etiqueta de datos del punto/barra más alto nunca choque con la leyenda
+  // ni se corte contra el borde del gráfico.
+  const maxSpend = Math.max(1, ...grouped.map((g) => g.spend));
+  const maxLeads = Math.max(1, ...grouped.map((g) => g.leads));
+
   state.charts[`trend-${s}`] = new Chart(ctx, {
     type: "bar",
     data: {
@@ -1423,21 +1429,27 @@ function renderTrendChart(rows, s) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      layout: { padding: { top: 18 } },
+      layout: { padding: { top: 12 } },
       interaction: { mode: "index", intersect: false },
       plugins: {
-        legend: { labels: { color: "#3a3530", font: { family: "Inter", size: 12 } } },
+        // Abajo, para que nunca compita con las etiquetas de datos que
+        // se dibujan arriba de barras y puntos.
+        legend: { position: "bottom", labels: { color: "#3a3530", font: { family: "Inter", size: 12 } } },
       },
       scales: {
         x: { ticks: { color: "#8a8175" }, grid: { display: false } },
         y: {
           position: "left",
+          beginAtZero: true,
+          suggestedMax: maxSpend * 1.3,
           ticks: { color: "#8a8175", callback: (v) => "$" + v.toLocaleString("es-MX") },
           grid: { color: "rgba(29,42,46,0.06)" },
           title: { display: true, text: "Inversión (MXN)", color: "#8a8175" },
         },
         y1: {
           position: "right",
+          beginAtZero: true,
+          suggestedMax: maxLeads * 1.3,
           ticks: { color: "#8a8175" },
           grid: { display: false },
           title: { display: true, text: "Leads", color: "#8a8175" },
