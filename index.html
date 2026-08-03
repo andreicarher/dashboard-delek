@@ -647,7 +647,17 @@ function normalizeSource(resp, source) {
     const monthNum = toNumber(cellValue(row, idx.month)) || null;
     const date = parseSheetDate(cellValue(row, idx.date), monthNum);
     const spend = toNumber(cellValue(row, idx.spend));
-    const leads = toNumber(cellValue(row, idx.leads));
+    const objectiveRaw = toText(cellValue(row, idx.objective)) || "Sin objetivo";
+    const facebookLeads = toNumber(cellValue(row, idx.leads));
+    const messagingConvos = toNumber(cellValue(row, idx.msgConvos));
+
+    // El "lead" real depende del objetivo de la campaña:
+    // - LEADFORM  -> el lead es un registro de formulario ("On Facebook Leads")
+    // - MENSAJES  -> el lead es una conversación de WhatsApp iniciada ("New messaging conversations")
+    // Si aparece un objetivo distinto a estos dos, usamos On Facebook Leads como
+    // valor por defecto (mismo comportamiento que antes de este ajuste).
+    const objectiveKey = objectiveRaw.trim().toUpperCase();
+    const leads = objectiveKey === "MENSAJES" ? messagingConvos : facebookLeads;
 
     out.push({
       source: source.id,
@@ -664,7 +674,7 @@ function normalizeSource(resp, source) {
       ad: toText(cellValue(row, idx.ad)),
       campaignAdset: toText(cellValue(row, idx.campaignAdset)) || campaign,
       funnel: toText(cellValue(row, idx.funnel)) || "Sin etapa",
-      objective: toText(cellValue(row, idx.objective)) || "Sin objetivo",
+      objective: objectiveRaw,
       spend,
       reach: toNumber(cellValue(row, idx.reach)),
       impressions: toNumber(cellValue(row, idx.impressions)),
@@ -676,7 +686,8 @@ function normalizeSource(resp, source) {
       lpViews: toNumber(cellValue(row, idx.lpViews)),
       webRegs: toNumber(cellValue(row, idx.webRegs)),
       leads,
-      msgConvos: toNumber(cellValue(row, idx.msgConvos)),
+      facebookLeads,
+      messagingConvos,
     });
   }
   return out;
