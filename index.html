@@ -287,6 +287,65 @@ td.num, th.num { text-align: right; font-family: 'IBM Plex Mono', monospace; fon
 .empty { text-align: center; color: var(--muted); padding: 30px !important; }
 .table-scroll { max-height: 420px; overflow: auto; }
 
+/* ---------- Alerta de fatiga (Frequency) ---------- */
+.fatigue-badge { color: var(--clay); }
+.fatigue-cell { color: var(--clay); font-weight: 600; }
+
+/* ---------- Variación vs. periodo anterior ---------- */
+.kpi-delta {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  margin-top: 4px;
+  display: block;
+}
+.kpi-delta.up { color: #3d7a55; }
+.kpi-delta.down { color: var(--clay); }
+.kpi-delta.neutral { color: var(--muted); }
+
+/* ---------- Desglose secundario (leads por tipo, idioma) ---------- */
+.kpi-grid-secondary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 20px;
+}
+.kpi-grid-secondary .kpi-card { background: var(--paper-2); }
+.section-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+
+/* ---------- Ritmo de gasto ---------- */
+.pacing-track {
+  position: relative;
+  height: 10px;
+  background: var(--paper-2);
+  border-radius: 999px;
+  overflow: hidden;
+  margin: 10px 0 8px;
+}
+.pacing-fill {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  background: var(--ocean-light);
+  border-radius: 999px;
+}
+.pacing-fill.over-pace { background: var(--clay); }
+.pacing-marker {
+  position: absolute; top: -3px; bottom: -3px;
+  width: 2px;
+  background: var(--ink);
+}
+.pacing-legend { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+
 /* ---------- Loading overlay ---------- */
 #loading-overlay {
   position: fixed; inset: 0;
@@ -463,6 +522,18 @@ const DASHBOARD_CONFIG = {
 
   // Cada cuántos minutos se refresca automáticamente el dashboard en pantalla
   autoRefreshMinutes: 15,
+
+  // Presupuesto mensual por plaza (MXN), para el panel de "ritmo de gasto".
+  // Déjalo en null para ocultar ese panel en una plaza específica hasta que
+  // tengas la cifra — no rompe nada, simplemente no se muestra.
+  monthlyBudgetMXN: {
+    Tulum: 30000,
+    Holbox: 15000,
+  },
+
+  // A partir de qué "Frequency" se considera que un anuncio empieza a fatigar
+  // a su audiencia (se marca con ⚠ en la tabla de mejores anuncios).
+  frequencyWarningThreshold: 3.5,
 };
 
 
@@ -744,12 +815,19 @@ function buildPropertySections() {
     <section class="property-block" data-property="${escapeHtml(prop)}">
 
       <div class="kpi-grid" aria-label="Indicadores clave — ${escapeHtml(prop)}">
-        <div class="kpi-card"><div class="gauge"></div><p class="kpi-label">Inversión total</p><p class="kpi-value" id="kpi-spend-${s}">—</p></div>
-        <div class="kpi-card"><div class="gauge"></div><p class="kpi-label">Leads totales</p><p class="kpi-value" id="kpi-leads-${s}">—</p></div>
-        <div class="kpi-card"><div class="gauge"></div><p class="kpi-label">Costo por lead</p><p class="kpi-value" id="kpi-cpl-${s}">—</p></div>
-        <div class="kpi-card"><div class="gauge"></div><p class="kpi-label">Impresiones</p><p class="kpi-value" id="kpi-impressions-${s}">—</p></div>
-        <div class="kpi-card"><div class="gauge"></div><p class="kpi-label">CTR</p><p class="kpi-value" id="kpi-ctr-${s}">—</p></div>
-        <div class="kpi-card"><div class="gauge"></div><p class="kpi-label">CPM</p><p class="kpi-value" id="kpi-cpm-${s}">—</p></div>
+        <div class="kpi-card"><div class="gauge"></div><p class="kpi-label">Inversión total</p><p class="kpi-value" id="kpi-spend-${s}">—</p><span class="kpi-delta neutral" id="kpi-delta-spend-${s}"></span></div>
+        <div class="kpi-card"><div class="gauge"></div><p class="kpi-label">Leads totales</p><p class="kpi-value" id="kpi-leads-${s}">—</p><span class="kpi-delta neutral" id="kpi-delta-leads-${s}"></span></div>
+        <div class="kpi-card"><div class="gauge"></div><p class="kpi-label">Costo por lead</p><p class="kpi-value" id="kpi-cpl-${s}">—</p><span class="kpi-delta neutral" id="kpi-delta-cpl-${s}"></span></div>
+        <div class="kpi-card"><div class="gauge"></div><p class="kpi-label">Impresiones</p><p class="kpi-value" id="kpi-impressions-${s}">—</p><span class="kpi-delta neutral" id="kpi-delta-impressions-${s}"></span></div>
+        <div class="kpi-card"><div class="gauge"></div><p class="kpi-label">CTR</p><p class="kpi-value" id="kpi-ctr-${s}">—</p><span class="kpi-delta neutral" id="kpi-delta-ctr-${s}"></span></div>
+        <div class="kpi-card"><div class="gauge"></div><p class="kpi-label">CPM</p><p class="kpi-value" id="kpi-cpm-${s}">—</p><span class="kpi-delta neutral" id="kpi-delta-cpm-${s}"></span></div>
+      </div>
+      <p class="section-label" style="margin-top:4px;">Desglose por tipo de lead</p>
+      <div class="kpi-grid-secondary" aria-label="Desglose de leads por tipo — ${escapeHtml(prop)}">
+        <div class="kpi-card"><p class="kpi-label">Leads (Formulario)</p><p class="kpi-value" id="kpi-formleads-${s}">—</p></div>
+        <div class="kpi-card"><p class="kpi-label">Costo por lead (Form)</p><p class="kpi-value" id="kpi-formcpl-${s}">—</p></div>
+        <div class="kpi-card"><p class="kpi-label">Conversaciones (WhatsApp)</p><p class="kpi-value" id="kpi-waconvos-${s}">—</p></div>
+        <div class="kpi-card"><p class="kpi-label">Costo por conversación</p><p class="kpi-value" id="kpi-wacpc-${s}">—</p></div>
       </div>
 
       <div class="charts-row">
@@ -760,6 +838,28 @@ function buildPropertySections() {
         <div class="panel">
           <h2>Inversión por etapa del funnel</h2>
           <div class="chart-wrap"><canvas id="chart-funnel-${s}"></canvas></div>
+        </div>
+      </div>
+
+      <div class="charts-row-2">
+        <div class="panel">
+          <h2>Desempeño por idioma</h2>
+          <div class="table-scroll" style="max-height:220px;">
+            <table>
+              <thead>
+                <tr><th>Idioma</th><th class="num">Inversión</th><th class="num">Leads</th><th class="num">CPL</th></tr>
+              </thead>
+              <tbody id="lang-body-${s}"><tr><td colspan="4" class="empty">Cargando datos…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel" id="pacing-panel-${s}">
+          <h2 id="pacing-title-${s}">Ritmo de gasto</h2>
+          <div id="pacing-content-${s}">
+            <p style="color:var(--muted); font-size:13px;">
+              Configura <code>monthlyBudgetMXN.${escapeHtml(prop)}</code> en <code>DASHBOARD_CONFIG</code> para activar este panel.
+            </p>
+          </div>
         </div>
       </div>
 
@@ -776,10 +876,11 @@ function buildPropertySections() {
                 <th class="num">Leads</th>
                 <th class="num">CPL</th>
                 <th class="num">CTR</th>
+                <th class="num">Frecuencia</th>
               </tr>
             </thead>
             <tbody id="top-ads-body-${s}">
-              <tr><td colspan="7" class="empty">Cargando datos…</td></tr>
+              <tr><td colspan="8" class="empty">Cargando datos…</td></tr>
             </tbody>
           </table>
         </div>
@@ -911,6 +1012,62 @@ function computeKpis(rows) {
   return { spend, leads, impressions, clicks, cpl, cpm, ctr };
 }
 
+// Desglosa el blend de "leads" en sus dos fuentes reales: formulario (LEADFORM)
+// y conversación de WhatsApp iniciada (MENSAJES). Cada una con su propio costo.
+function computeLeadSplit(rows) {
+  const formRows = rows.filter((r) => r.objective.trim().toUpperCase() === "LEADFORM");
+  const waRows = rows.filter((r) => r.objective.trim().toUpperCase() === "MENSAJES");
+  const formSpend = sum(formRows, "spend");
+  const formLeads = sum(formRows, "facebookLeads");
+  const waSpend = sum(waRows, "spend");
+  const waConvos = sum(waRows, "messagingConvos");
+  return {
+    formSpend, formLeads,
+    formCpl: formLeads > 0 ? formSpend / formLeads : 0,
+    waSpend, waConvos,
+    waCpc: waConvos > 0 ? waSpend / waConvos : 0,
+  };
+}
+
+// Quita acentos y pasa a mayúsculas, para comparar texto de forma robusta
+// ("ESPAÑOL" === "ESPANOL" sin tilde).
+function normalizeText(s) {
+  return (s || "").toString().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
+}
+
+// Detecta el idioma de un anuncio a partir de su nombre (convención ya usada
+// en tus creativos: "..._INGLES" / "..._ESPAÑOL").
+function detectAdLanguage(adName) {
+  const n = normalizeText(adName);
+  if (n.includes("INGLES")) return "Inglés";
+  if (n.includes("ESPANOL")) return "Español";
+  return "Sin especificar";
+}
+
+// Filas de la plaza `prop` en el periodo INMEDIATAMENTE ANTERIOR al rango de
+// fechas activo (mismo largo de días), respetando los demás filtros activos.
+// Se usa para calcular variaciones % (semana vs. semana, mes vs. mes, etc.).
+function getPreviousPeriodRows(prop) {
+  const f = state.filters;
+  if (!f.from || !f.to) return [];
+  const rangeMs = f.to.getTime() - f.from.getTime();
+  const prevTo = new Date(f.from.getTime() - 86400000); // un día antes del "Desde" actual
+  const prevFrom = new Date(prevTo.getTime() - rangeMs);
+  return state.raw.filter((r) => {
+    if (r.property !== prop) return false;
+    if (f.funnel !== "all" && r.funnel !== f.funnel) return false;
+    if (f.objective !== "all" && r.objective !== f.objective) return false;
+    return r.date >= prevFrom && r.date <= prevTo;
+  });
+}
+
+// % de cambio entre dos valores, con manejo de casos borde (sin datos previos, etc.)
+function pctChange(curr, prev) {
+  if (prev === 0 && curr === 0) return null;
+  if (prev === 0) return Infinity; // "nuevo", no había base de comparación
+  return ((curr - prev) / prev) * 100;
+}
+
 const MONTH_ABBR_ES = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
 
 // Número de semana ISO-8601 (semanas de lunes a domingo, semana 1 = la que contiene el primer jueves del año)
@@ -985,7 +1142,28 @@ function groupByCreative(rows) {
     if (!map.has(key)) map.set(key, { campaign: r.campaign, adset: r.adset, ad: r.ad, rows: [] });
     map.get(key).rows.push(r);
   }
-  return Array.from(map.values()).map((g) => ({ ...g, ...computeKpis(g.rows) }));
+  return Array.from(map.values()).map((g) => {
+    // Frecuencia más reciente dentro del rango filtrado (no un promedio):
+    // "Frequency" ya es un acumulado por Meta, así que lo que importa para
+    // detectar fatiga es su valor más actual, no diluirlo con días pasados.
+    const sortedByDate = [...g.rows].sort((a, b) => a.date - b.date);
+    const currentFrequency = sortedByDate.length ? sortedByDate[sortedByDate.length - 1].frequency : 0;
+    return { ...g, ...computeKpis(g.rows), currentFrequency, language: detectAdLanguage(g.ad) };
+  });
+}
+
+// Agrupa por idioma detectado del anuncio (a partir del nombre del creativo).
+function groupByLanguage(rows) {
+  const map = new Map();
+  for (const r of rows) {
+    const lang = detectAdLanguage(r.ad);
+    if (!map.has(lang)) map.set(lang, []);
+    map.get(lang).push(r);
+  }
+  return Array.from(map.entries())
+    .map(([language, group]) => ({ language, ...computeKpis(group) }))
+    .filter((g) => g.spend > 0)
+    .sort((a, b) => b.spend - a.spend);
 }
 
 // Para cada campaña, elige el anuncio con mejor desempeño:
@@ -1021,9 +1199,12 @@ function renderAll() {
   for (const prop of properties) {
     const s = slug(prop);
     const rows = state.filtered.filter((r) => r.property === prop);
-    renderKpis(rows, s);
+    renderKpis(rows, s, prop);
+    renderLeadSplit(rows, s);
     renderTrendChart(rows, s);
     renderFunnelChart(rows, s);
+    renderLanguageTable(rows, s);
+    renderPacing(prop, s);
     renderTopAds(rows, s);
     renderTable(rows, s);
   }
@@ -1031,20 +1212,126 @@ function renderAll() {
     "Última actualización: " + new Date().toLocaleString("es-MX");
 }
 
-function renderKpis(rows, s) {
+// Metadatos de cada KPI principal: cómo formatearlo y si "subir" es bueno,
+// malo o neutral (para pintar la variación % del color correcto).
+const KPI_META = {
+  spend: { fmt: fmtMoney, goodDirection: "neutral" },
+  leads: { fmt: fmtNum, goodDirection: "up" },
+  cpl: { fmt: fmtMoney2, goodDirection: "down" },
+  impressions: { fmt: fmtNum, goodDirection: "neutral" },
+  ctr: { fmt: fmtPct, goodDirection: "up" },
+  cpm: { fmt: fmtMoney2, goodDirection: "down" },
+};
+
+function renderKpiDelta(id, curr, prev, goodDirection) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const change = pctChange(curr, prev);
+  if (change === null) { el.textContent = ""; return; }
+  if (change === Infinity) {
+    el.textContent = "Nuevo";
+    el.className = "kpi-delta neutral";
+    return;
+  }
+  const arrow = change > 0 ? "▲" : change < 0 ? "▼" : "•";
+  el.textContent = `${arrow} ${Math.abs(change).toFixed(0)}% vs. periodo anterior`;
+  let cls = "neutral";
+  if (goodDirection !== "neutral" && change !== 0) {
+    const isGood = (goodDirection === "up" && change > 0) || (goodDirection === "down" && change < 0);
+    cls = isGood ? "up" : "down";
+  }
+  el.className = `kpi-delta ${cls}`;
+}
+
+function renderKpis(rows, s, prop) {
   const k = computeKpis(rows);
+  const prevK = computeKpis(getPreviousPeriodRows(prop));
   const map = {
-    [`kpi-spend-${s}`]: fmtMoney(k.spend),
-    [`kpi-leads-${s}`]: fmtNum(k.leads),
-    [`kpi-cpl-${s}`]: fmtMoney2(k.cpl),
-    [`kpi-impressions-${s}`]: fmtNum(k.impressions),
-    [`kpi-ctr-${s}`]: fmtPct(k.ctr),
-    [`kpi-cpm-${s}`]: fmtMoney2(k.cpm),
+    spend: k.spend, leads: k.leads, cpl: k.cpl,
+    impressions: k.impressions, ctr: k.ctr, cpm: k.cpm,
+  };
+  for (const [key, val] of Object.entries(map)) {
+    const el = document.getElementById(`kpi-${key}-${s}`);
+    if (el) el.textContent = KPI_META[key].fmt(val);
+    renderKpiDelta(`kpi-delta-${key}-${s}`, val, prevK[key], KPI_META[key].goodDirection);
+  }
+}
+
+function renderLeadSplit(rows, s) {
+  const split = computeLeadSplit(rows);
+  const map = {
+    [`kpi-formleads-${s}`]: fmtNum(split.formLeads),
+    [`kpi-formcpl-${s}`]: split.formLeads > 0 ? fmtMoney2(split.formCpl) : "—",
+    [`kpi-waconvos-${s}`]: fmtNum(split.waConvos),
+    [`kpi-wacpc-${s}`]: split.waConvos > 0 ? fmtMoney2(split.waCpc) : "—",
   };
   for (const [id, val] of Object.entries(map)) {
     const el = document.getElementById(id);
     if (el) el.textContent = val;
   }
+}
+
+function renderLanguageTable(rows, s) {
+  const langs = groupByLanguage(rows);
+  const tbody = document.getElementById(`lang-body-${s}`);
+  if (!tbody) return;
+  tbody.innerHTML = langs.map((l) => `
+    <tr>
+      <td>${escapeHtml(l.language)}</td>
+      <td class="num">${fmtMoney2(l.spend)}</td>
+      <td class="num">${fmtNum(l.leads)}</td>
+      <td class="num">${l.leads > 0 ? fmtMoney2(l.cpl) : "—"}</td>
+    </tr>
+  `).join("") || `<tr><td colspan="4" class="empty">Sin datos para este filtro.</td></tr>`;
+}
+
+function renderPacing(prop, s) {
+  const budget = DASHBOARD_CONFIG.monthlyBudgetMXN && DASHBOARD_CONFIG.monthlyBudgetMXN[prop];
+  const content = document.getElementById(`pacing-content-${s}`);
+  const title = document.getElementById(`pacing-title-${s}`);
+  if (!content) return;
+
+  if (!budget || budget <= 0) {
+    content.innerHTML = `<p style="color:var(--muted); font-size:13px;">
+      Configura <code>monthlyBudgetMXN.${escapeHtml(prop)}</code> en <code>DASHBOARD_CONFIG</code> para activar este panel.
+    </p>`;
+    return;
+  }
+
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  const daysInMonth = monthEnd.getDate();
+  const daysElapsed = Math.min(now.getDate(), daysInMonth);
+  const pctTimeElapsed = (daysElapsed / daysInMonth) * 100;
+
+  const f = state.filters;
+  const monthRows = state.raw.filter((r) => {
+    if (r.property !== prop) return false;
+    if (f.funnel !== "all" && r.funnel !== f.funnel) return false;
+    if (f.objective !== "all" && r.objective !== f.objective) return false;
+    return r.date >= monthStart && r.date <= monthEnd;
+  });
+  const spendThisMonth = sum(monthRows, "spend");
+  const pctBudgetSpent = (spendThisMonth / budget) * 100;
+  const overPace = pctBudgetSpent - pctTimeElapsed > 5; // gastando 5+ pts más rápido de lo que avanza el mes
+
+  if (title) title.textContent = `Ritmo de gasto — ${MONTH_NAME[now.getMonth()]} ${now.getFullYear()}`;
+  content.innerHTML = `
+    <div class="pacing-track">
+      <div class="pacing-fill ${overPace ? "over-pace" : ""}" style="width:${Math.min(pctBudgetSpent, 100)}%"></div>
+      <div class="pacing-marker" style="left:${Math.min(pctTimeElapsed, 100)}%"></div>
+    </div>
+    <div class="pacing-legend">
+      <span>${fmtMoney(spendThisMonth)} de ${fmtMoney(budget)} (${pctBudgetSpent.toFixed(0)}%)</span>
+      <span>Mes ${pctTimeElapsed.toFixed(0)}% transcurrido</span>
+    </div>
+    <p style="color:${overPace ? "var(--clay)" : "var(--ink-soft)"}; font-size:12.5px; margin-top:8px;">
+      ${overPace
+        ? "Vas gastando más rápido de lo que avanza el mes — a este ritmo podrías agotar el presupuesto antes de fin de mes."
+        : "Ritmo de gasto saludable respecto al presupuesto mensual."}
+    </p>
+  `;
 }
 
 function destroyChart(name) {
@@ -1198,9 +1485,15 @@ function renderFunnelChart(rows, s) {
 
 function renderTopAds(rows, s) {
   const best = bestAdPerCampaign(rows);
+  const threshold = DASHBOARD_CONFIG.frequencyWarningThreshold;
   const tbody = document.getElementById(`top-ads-body-${s}`);
   if (!tbody) return;
-  tbody.innerHTML = best.map((b) => `
+  tbody.innerHTML = best.map((b) => {
+    const fatigued = b.currentFrequency >= threshold;
+    const freqCell = b.currentFrequency > 0
+      ? `${fatigued ? '<span class="fatigue-badge" title="Frecuencia alta: la audiencia ya vio este anuncio varias veces, puede estar fatigándose">⚠</span> ' : ""}${b.currentFrequency.toFixed(1)}`
+      : "—";
+    return `
     <tr>
       <td class="col-campaign">${escapeHtml(b.campaign)}</td>
       <td>${escapeHtml(b.ad)}</td>
@@ -1209,8 +1502,9 @@ function renderTopAds(rows, s) {
       <td class="num">${fmtNum(b.leads)}</td>
       <td class="num">${b.leads > 0 ? fmtMoney2(b.cpl) : "—"}</td>
       <td class="num">${fmtPct(b.ctr)}</td>
-    </tr>
-  `).join("") || `<tr><td colspan="7" class="empty">Sin datos para este filtro.</td></tr>`;
+      <td class="num ${fatigued ? "fatigue-cell" : ""}">${freqCell}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="8" class="empty">Sin datos para este filtro.</td></tr>`;
 }
 
 function renderTable(rows, s) {
