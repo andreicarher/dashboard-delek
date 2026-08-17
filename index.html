@@ -1081,8 +1081,13 @@ function buildBodasHolboxSectionHtml() {
         <div class="kpi-card"><div class="gauge"></div><p class="kpi-label">Costo por lead</p><p class="kpi-value" id="kpi-bodas-cpl">—</p></div>
       </div>
 
+      <div class="panel" style="margin-bottom:20px;">
+        <h2>Funnel de ventas</h2>
+        <div class="chart-wrap" style="height:340px;"><canvas id="bodas-funnel-chart"></canvas></div>
+      </div>
+
       <div class="table-panel" style="margin-bottom:20px;">
-        <h2>Funnel de ventas — costo por etapa</h2>
+        <h2>Costo por etapa (detalle)</h2>
         <p style="color:var(--ink-soft); font-size:12.5px; padding:0 20px; margin:-6px 0 10px;">
           "Leads en esta etapa o más adelante" asume que un lead más avanzado ya pasó por las etapas anteriores.
           El costo se calcula con la inversión total en campañas de bodas ÷ esos leads.
@@ -1160,6 +1165,7 @@ function showPropertyTab(prop) {
   requestAnimationFrame(() => {
     if (state.charts[`trend-${s}`]) state.charts[`trend-${s}`].resize();
     if (state.charts[`funnel-${s}`]) state.charts[`funnel-${s}`].resize();
+    if (state.charts["bodas-funnel"]) state.charts["bodas-funnel"].resize();
   });
 }
 
@@ -1475,8 +1481,13 @@ function renderBodasHolboxPanel() {
   const wonStage = cfg.bodasHolboxWonStage;
   const lostStage = cfg.bodasHolboxLostStage;
 
-  const won = leads.filter((l) => l.stage === wonStage).length;
-  const lost = leads.filter((l) => l.stage === lostStage).length;
+  // Kommo no siempre es consistente con mayúsculas/acentos en el nombre de
+  // la etapa (ej. "Llamada agendada" vs "Llamada Agendada", "CONTACTO INICIAL"
+  // vs "Contacto Inicial") — comparamos normalizado para no perder leads por eso.
+  const stageEquals = (a, b) => normalizeText(a) === normalizeText(b);
+
+  const won = leads.filter((l) => stageEquals(l.stage, wonStage)).length;
+  const lost = leads.filter((l) => stageEquals(l.stage, lostStage)).length;
   const total = leads.length;
   const winRate = (won + lost) > 0 ? (won / (won + lost)) * 100 : null;
 
@@ -1499,36 +1510,35 @@ function renderBodasHolboxPanel() {
   // Índice de una etapa dentro del funnel; "ganado" cuenta como más allá de
   // todas las etapas, "perdido" y etapas desconocidas quedan fuera del acumulado.
   function stageIndex(stage) {
-    const i = stageOrder.indexOf(stage);
+    const i = stageOrder.findIndex((s) => stageEquals(s, stage));
     if (i >= 0) return i;
-    if (stage === wonStage) return stageOrder.length;
+    if (stageEquals(stage, wonStage)) return stageOrder.length;
     return -1;
   }
 
+  const funnelStages = stageOrder.map((stage, idx) => {
+    const inStage = leads.filter((l) => stageEquals(l.stage, stage)).length;
+    const atOrBeyond = leads.filter((l) => stageIndex(l.stage) >= idx).length;
+    return { stage, inStage, atOrBeyond };
+  });
+  funnelStages.push({ stage: wonStage, inStage: won, atOrBeyond: won });
+
   const funnelBody = document.getElementById("bodas-funnel-body");
   if (funnelBody) {
-    const rows = stageOrder.map((stage, idx) => {
-      const inStage = leads.filter((l) => l.stage === stage).length;
-      const atOrBeyond = leads.filter((l) => stageIndex(l.stage) >= idx).length;
+    funnelBody.innerHTML = funnelStages.map(({ stage, inStage, atOrBeyond }, i) => {
       const stageCost = atOrBeyond > 0 ? bodasSpend / atOrBeyond : 0;
+      const isLast = i === funnelStages.length - 1;
       return `
-        <tr>
+        <tr${isLast ? ' style="font-weight:600;"' : ""}>
           <td class="col-campaign">${escapeHtml(stage)}</td>
           <td class="num">${fmtNum(inStage)}</td>
           <td class="num">${fmtNum(atOrBeyond)}</td>
           <td class="num">${atOrBeyond > 0 ? fmtMoney2(stageCost) : "—"}</td>
         </tr>`;
-    });
-    // Fila final: ganados (el fondo del funnel)
-    rows.push(`
-      <tr style="font-weight:600;">
-        <td class="col-campaign">${escapeHtml(wonStage)}</td>
-        <td class="num">${fmtNum(won)}</td>
-        <td class="num">${fmtNum(won)}</td>
-        <td class="num">${won > 0 ? fmtMoney2(bodasSpend / won) : "—"}</td>
-      </tr>`);
-    funnelBody.innerHTML = rows.join("") || `<tr><td colspan="4" class="empty">Sin leads en el pipeline de Bodas Holbox.</td></tr>`;
+    }).join("") || `<tr><td colspan="4" class="empty">Sin leads en el pipeline de Bodas Holbox.</td></tr>`;
   }
+
+  renderBodasFunnelChart(funnelStages);
 
   const respBody = document.getElementById("bodas-resp-body");
   if (respBody) {
@@ -1537,8 +1547,8 @@ function renderBodasHolboxPanel() {
       if (!byResp.has(l.responsableName)) byResp.set(l.responsableName, { total: 0, won: 0, lost: 0 });
       const r = byResp.get(l.responsableName);
       r.total++;
-      if (l.stage === wonStage) r.won++;
-      if (l.stage === lostStage) r.lost++;
+      if (stageEquals(l.stage, wonStage)) r.won++;
+      if (stageEquals(l.stage, lostStage)) r.lost++;
     }
     const rows = Array.from(byResp.entries()).sort((a, b) => b[1].total - a[1].total);
     respBody.innerHTML = rows.map(([name, r]) => {
@@ -1553,6 +1563,49 @@ function renderBodasHolboxPanel() {
         </tr>`;
     }).join("") || `<tr><td colspan="5" class="empty">Sin datos.</td></tr>`;
   }
+}
+
+// Funnel visual: barras horizontales usando el acumulado ("en esta etapa o
+// más adelante"), que es la serie que siempre baja o se mantiene — la
+// forma correcta de leer un funnel de ventas.
+function renderBodasFunnelChart(funnelStages) {
+  const canvas = document.getElementById("bodas-funnel-chart");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  destroyChart("bodas-funnel");
+
+  const topOfFunnel = funnelStages[0]?.atOrBeyond || 0;
+  const palette = ["#1f4b54", "#2c5f68", "#3d7a80", "#5c9299", "#7fabb0", "#8fb6ac", "#3d7a55"];
+
+  state.charts["bodas-funnel"] = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels: funnelStages.map((f) => f.stage),
+      datasets: [{
+        data: funnelStages.map((f) => f.atOrBeyond),
+        backgroundColor: funnelStages.map((_, i) => palette[i % palette.length]),
+        borderRadius: 4,
+        showLabels: true,
+        labelColor: "#faf8f3",
+        labelOffset: 0,
+        formatLabel: (v) => {
+          const pct = topOfFunnel > 0 ? ((v / topOfFunnel) * 100).toFixed(0) : "0";
+          return `${v}  (${pct}%)`;
+        },
+      }],
+    },
+    options: {
+      indexAxis: "y",
+      responsive: true,
+      maintainAspectRatio: false,
+      layout: { padding: { right: 40 } },
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { beginAtZero: true, ticks: { color: "#8a8175" }, grid: { color: "rgba(29,42,46,0.06)" } },
+        y: { ticks: { color: "#3a3530", font: { family: "Inter", size: 12.5 } }, grid: { display: false } },
+      },
+    },
+  });
 }
 
 function setText(id, text) {
