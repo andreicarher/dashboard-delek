@@ -187,6 +187,7 @@ main {
 .property-block { margin-bottom: 40px; }
 .property-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ocean-light); flex-shrink: 0; }
 .property-dot[data-property="Holbox"] { background: var(--clay); }
+.property-dot[data-property="Bodas Holbox"] { background: var(--seafoam); }
 
 /* ---------- KPIs ---------- */
 .kpi-grid {
@@ -534,6 +535,42 @@ const DASHBOARD_CONFIG = {
   // A partir de qué "Frequency" se considera que un anuncio empieza a fatigar
   // a su audiencia (se marca con ⚠ en la tabla de mejores anuncios).
   frequencyWarningThreshold: 3.5,
+
+  // ---------- Pipeline comercial (Kommo) ----------
+  // Fuente de leads: la pestaña "Base Leads Kommo" (un lead = una fila,
+  // ya viene con su etapa y pipeline correctos desde Kommo).
+  kommoLeads: {
+    spreadsheetId: "13GQnl_hIY2OLXHUKelbLSe-ii4NZ6JJN2SHmjY8xmBk",
+    sheetName: "Base Leads Kommo",
+  },
+
+  // ID de Kommo -> nombre del responsable (para mostrar nombres, no números)
+  responsableMap: {
+    "10016279": "rockin.",
+    "14622223": "ADMIN DELEK",
+    "14622287": "Molly",
+    "14622323": "Abigail May",
+    "14622339": "Thalia Plasencia",
+    "15131847": "FRONT DESK DLK TULUM",
+  },
+
+  // Orden real de las etapas del pipeline "BODAS HOLBOX" en Kommo.
+  // "Logrado con Éxito" y "Ventas Perdidos" son los dos estados terminales.
+  bodasHolboxStages: [
+    "Incoming Leads",
+    "Lead Nuevo",
+    "Contacto Inicial",
+    "Discovery",
+    "Llamada Agendada",
+    "Propuesta Enviada",
+    "Negociación/Contacto",
+  ],
+  bodasHolboxWonStage: "Logrado con Éxito",
+  bodasHolboxLostStage: "Ventas Perdidos",
+
+  // Cómo identificar, dentro de los datos ya cargados de Meta Ads (Holbox),
+  // cuáles filas corresponden a campañas de bodas (para el costo por etapa).
+  bodasCampaignMatch: "BODASHOLBOX",
 };
 
 
@@ -555,6 +592,7 @@ const MONTH_NAME = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Ag
 const state = {
   raw: [],          // filas normalizadas de todas las fuentes
   filtered: [],
+  kommoLeads: [],   // leads de Kommo (pestaña "Base Leads Kommo"), un lead = una fila
   filters: {
     funnel: "all",
     objective: "all",
@@ -679,6 +717,56 @@ function colIndexByLabel(cols, candidates) {
   return -1;
 }
 
+// Fechas de Kommo vienen como "2026-02-27 9:56" (texto) o como Date() de gviz.
+function parseKommoDate(cell) {
+  if (!cell) return null;
+  if (typeof cell.v === "string" && cell.v.startsWith("Date(")) {
+    const m = cell.v.match(/Date\((\d+),(\d+),(\d+)(?:,(\d+),(\d+),(\d+))?/);
+    if (m) return new Date(+m[1], +m[2], +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
+  }
+  const txt = toText(cell);
+  if (!txt) return null;
+  const d = new Date(txt.replace(" ", "T"));
+  return isNaN(d) ? null : d;
+}
+
+// Normaliza la pestaña "Base Leads Kommo" (un lead = una fila, ya con su
+// etapa y pipeline correctos desde Kommo — sin necesidad de deducir nada).
+function normalizeKommoLeads(resp) {
+  const cols = resp.table.cols;
+  const rows = resp.table.rows || [];
+  const idx = {
+    id: colIndexByLabel(cols, ["ID"]),
+    contact: colIndexByLabel(cols, ["Contacto principal"]),
+    responsable: colIndexByLabel(cols, ["Responsable"]),
+    stage: colIndexByLabel(cols, ["Estatus del lead"]),
+    pipeline: colIndexByLabel(cols, ["Embudo de ventas"]),
+    budget: colIndexByLabel(cols, ["Presupuesto"]),
+    createdAt: colIndexByLabel(cols, ["Fecha de creación"]),
+  };
+
+  const out = [];
+  for (const row of rows) {
+    if (!row || !row.c) continue;
+    const id = toText(cellValue(row, idx.id));
+    const pipeline = toText(cellValue(row, idx.pipeline)).trim().toUpperCase();
+    if (!id || !pipeline) continue; // filas vacías al final de la hoja
+
+    const responsableId = toText(cellValue(row, idx.responsable));
+    out.push({
+      id,
+      contact: toText(cellValue(row, idx.contact)) || `Lead #${id}`,
+      responsableId,
+      responsableName: DASHBOARD_CONFIG.responsableMap[responsableId] || responsableId || "Sin asignar",
+      stage: toText(cellValue(row, idx.stage)) || "Sin etapa",
+      pipeline,
+      budget: toNumber(cellValue(row, idx.budget)),
+      createdAt: parseKommoDate(cellValue(row, idx.createdAt)),
+    });
+  }
+  return out;
+}
+
 function normalizeSource(resp, source) {
   const cols = resp.table.cols;
   const rows = resp.table.rows || [];
@@ -768,16 +856,28 @@ function normalizeSource(resp, source) {
 
 async function loadAllData() {
   const cfg = DASHBOARD_CONFIG;
-  const results = await Promise.allSettled(
-    cfg.sources.map((s) => fetchSheetTabWithRetry(cfg.spreadsheetId, s.sheetName).then((r) => normalizeSource(r, s)))
-  );
+  const [metaResults, kommoResult] = await Promise.all([
+    Promise.allSettled(
+      cfg.sources.map((s) => fetchSheetTabWithRetry(cfg.spreadsheetId, s.sheetName).then((r) => normalizeSource(r, s)))
+    ),
+    fetchSheetTabWithRetry(cfg.kommoLeads.spreadsheetId, cfg.kommoLeads.sheetName)
+      .then((r) => ({ status: "fulfilled", value: normalizeKommoLeads(r) }))
+      .catch((err) => ({ status: "rejected", reason: err })),
+  ]);
 
   let combined = [];
   const errors = [];
-  results.forEach((r, i) => {
+  metaResults.forEach((r, i) => {
     if (r.status === "fulfilled") combined = combined.concat(r.value);
     else errors.push(cfg.sources[i].sheetName + ": " + r.reason.message);
   });
+
+  if (kommoResult.status === "fulfilled") {
+    state.kommoLeads = kommoResult.value;
+  } else {
+    state.kommoLeads = [];
+    errors.push(cfg.kommoLeads.sheetName + ": " + kommoResult.reason.message);
+  }
 
   state.raw = combined.filter((r) => r.date instanceof Date && !isNaN(r.date));
   showDataErrors(errors);
@@ -800,6 +900,13 @@ function getProperties() {
     if (!seen.includes(s.property)) seen.push(s.property);
   }
   return seen;
+}
+
+// Todas las pestañas del dashboard: las plazas de Meta Ads + la pestaña
+// especial de Bodas Holbox (que no viene de Meta, sino del pipeline de Kommo).
+const BODAS_TAB_NAME = "Bodas Holbox";
+function getAllTabs() {
+  return [...getProperties(), BODAS_TAB_NAME];
 }
 
 function slug(s) {
@@ -940,14 +1047,89 @@ function buildPropertySections() {
           </table>
         </div>
       </div>
+      <div class="table-panel" style="margin-bottom:20px;">
+        <h2>Pipeline comercial <span class="tag" style="margin-left:6px;">vía Kommo</span></h2>
+        <div class="charts-row-2" style="margin-bottom:0;">
+          <div class="table-scroll" style="max-height:280px;">
+            <table>
+              <thead><tr><th>Etapa</th><th class="num">Leads</th></tr></thead>
+              <tbody id="kommo-stage-body-${s}"><tr><td colspan="2" class="empty">Cargando datos…</td></tr></tbody>
+            </table>
+          </div>
+          <div class="table-scroll" style="max-height:280px;">
+            <table>
+              <thead><tr><th>Responsable</th><th class="num">Leads</th></tr></thead>
+              <tbody id="kommo-resp-body-${s}"><tr><td colspan="2" class="empty">Cargando datos…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </section>`;
-  }).join("");
+  }).join("") + buildBodasHolboxSectionHtml();
+}
+
+function buildBodasHolboxSectionHtml() {
+  const s = slug(BODAS_TAB_NAME);
+  return `
+    <section class="property-block" data-property="${escapeHtml(BODAS_TAB_NAME)}">
+      <div class="kpi-grid" aria-label="Indicadores clave — Bodas Holbox">
+        <div class="kpi-card"><div class="gauge"></div><p class="kpi-label">Leads totales</p><p class="kpi-value" id="kpi-bodas-leads">—</p></div>
+        <div class="kpi-card"><div class="gauge"></div><p class="kpi-label">Ganados</p><p class="kpi-value" id="kpi-bodas-won">—</p></div>
+        <div class="kpi-card"><div class="gauge"></div><p class="kpi-label">Perdidos</p><p class="kpi-value" id="kpi-bodas-lost">—</p></div>
+        <div class="kpi-card"><div class="gauge"></div><p class="kpi-label">Tasa de cierre</p><p class="kpi-value" id="kpi-bodas-winrate">—</p></div>
+        <div class="kpi-card"><div class="gauge"></div><p class="kpi-label">Inversión en bodas</p><p class="kpi-value" id="kpi-bodas-spend">—</p></div>
+        <div class="kpi-card"><div class="gauge"></div><p class="kpi-label">Costo por lead</p><p class="kpi-value" id="kpi-bodas-cpl">—</p></div>
+      </div>
+
+      <div class="table-panel" style="margin-bottom:20px;">
+        <h2>Funnel de ventas — costo por etapa</h2>
+        <p style="color:var(--ink-soft); font-size:12.5px; padding:0 20px; margin:-6px 0 10px;">
+          "Leads en esta etapa o más adelante" asume que un lead más avanzado ya pasó por las etapas anteriores.
+          El costo se calcula con la inversión total en campañas de bodas ÷ esos leads.
+        </p>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Etapa</th>
+                <th class="num">Leads en esta etapa</th>
+                <th class="num">Leads en esta etapa o más adelante</th>
+                <th class="num">Costo por lead (acumulado)</th>
+              </tr>
+            </thead>
+            <tbody id="bodas-funnel-body">
+              <tr><td colspan="4" class="empty">Cargando datos…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="table-panel">
+        <h2>Por responsable</h2>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Responsable</th>
+                <th class="num">Leads totales</th>
+                <th class="num">Ganados</th>
+                <th class="num">Perdidos</th>
+                <th class="num">Tasa de cierre</th>
+              </tr>
+            </thead>
+            <tbody id="bodas-resp-body">
+              <tr><td colspan="5" class="empty">Cargando datos…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>`;
 }
 
 function buildPropertyTabs() {
-  const properties = getProperties();
+  const tabs = getAllTabs();
   const container = document.getElementById("property-tabs");
-  container.innerHTML = properties.map((prop, i) => `
+  container.innerHTML = tabs.map((prop, i) => `
     <button class="property-tab-btn${i === 0 ? " active" : ""}" data-property="${escapeHtml(prop)}">
       <span class="property-dot" data-property="${escapeHtml(prop)}"></span>
       ${escapeHtml(prop)}
@@ -961,9 +1143,9 @@ function buildPropertyTabs() {
 
 function showPropertyTab(prop) {
   state.activeProperty = prop;
-  const properties = getProperties();
+  const tabs = getAllTabs();
 
-  properties.forEach((p) => {
+  tabs.forEach((p) => {
     const section = document.querySelector(`.property-block[data-property="${cssEscape(p)}"]`);
     if (section) section.style.display = p === prop ? "" : "none";
   });
@@ -1241,9 +1423,141 @@ function renderAll() {
     renderPacing(prop, s);
     renderTopAds(rows, s);
     renderTable(rows, s);
+    renderKommoPipelinePanel(prop, s);
   }
+  renderBodasHolboxPanel();
   document.getElementById("last-update").textContent =
     "Última actualización: " + new Date().toLocaleString("es-MX");
+}
+
+// ---------- Pipeline comercial (Kommo) ----------
+
+function groupCount(arr, keyFn) {
+  const map = new Map();
+  for (const item of arr) {
+    const key = keyFn(item);
+    map.set(key, (map.get(key) || 0) + 1);
+  }
+  return map;
+}
+
+// Panel genérico de pipeline para Tulum/Holbox: solo conteo por etapa y por
+// responsable — aquí NO se calcula costo por etapa (una sola campaña de
+// actividades alimenta todas las categorías, así que no hay forma de
+// atribuir gasto a "Wellness" vs "Restaurante" de forma confiable).
+function renderKommoPipelinePanel(prop, s) {
+  const stageBody = document.getElementById(`kommo-stage-body-${s}`);
+  const respBody = document.getElementById(`kommo-resp-body-${s}`);
+  if (!stageBody || !respBody) return;
+
+  const leads = state.kommoLeads.filter((l) => l.pipeline === prop.trim().toUpperCase());
+
+  const byStage = groupCount(leads, (l) => l.stage);
+  const stageRows = Array.from(byStage.entries()).sort((a, b) => b[1] - a[1]);
+  stageBody.innerHTML = stageRows.map(([stage, count]) => `
+    <tr><td>${escapeHtml(stage)}</td><td class="num">${fmtNum(count)}</td></tr>
+  `).join("") || `<tr><td colspan="2" class="empty">Sin leads registrados en Kommo para esta plaza.</td></tr>`;
+
+  const byResp = groupCount(leads, (l) => l.responsableName);
+  const respRows = Array.from(byResp.entries()).sort((a, b) => b[1] - a[1]);
+  respBody.innerHTML = respRows.map(([name, count]) => `
+    <tr><td>${escapeHtml(name)}</td><td class="num">${fmtNum(count)}</td></tr>
+  `).join("") || `<tr><td colspan="2" class="empty">Sin datos.</td></tr>`;
+}
+
+// Panel dedicado de Bodas Holbox: funnel de 7 etapas + costo por etapa
+// (cruzando con el gasto real de las campañas de bodas en Meta) + desglose
+// por responsable con tasa de cierre.
+function renderBodasHolboxPanel() {
+  const cfg = DASHBOARD_CONFIG;
+  const leads = state.kommoLeads.filter((l) => l.pipeline === "BODAS HOLBOX");
+  const stageOrder = cfg.bodasHolboxStages;
+  const wonStage = cfg.bodasHolboxWonStage;
+  const lostStage = cfg.bodasHolboxLostStage;
+
+  const won = leads.filter((l) => l.stage === wonStage).length;
+  const lost = leads.filter((l) => l.stage === lostStage).length;
+  const total = leads.length;
+  const winRate = (won + lost) > 0 ? (won / (won + lost)) * 100 : null;
+
+  // Inversión total en campañas de bodas: se usa TODO el histórico cargado
+  // (state.raw), no el rango de fechas filtrado arriba — esta pestaña es
+  // independiente de esos filtros porque compara contra el pipeline completo.
+  const bodasSpend = sum(
+    state.raw.filter((r) => r.property === "Holbox" && normalizeText(r.campaign).includes(normalizeText(cfg.bodasCampaignMatch))),
+    "spend"
+  );
+  const cpl = total > 0 ? bodasSpend / total : 0;
+
+  setText("kpi-bodas-leads", fmtNum(total));
+  setText("kpi-bodas-won", fmtNum(won));
+  setText("kpi-bodas-lost", fmtNum(lost));
+  setText("kpi-bodas-winrate", winRate === null ? "—" : fmtPct(winRate));
+  setText("kpi-bodas-spend", fmtMoney(bodasSpend));
+  setText("kpi-bodas-cpl", total > 0 ? fmtMoney2(cpl) : "—");
+
+  // Índice de una etapa dentro del funnel; "ganado" cuenta como más allá de
+  // todas las etapas, "perdido" y etapas desconocidas quedan fuera del acumulado.
+  function stageIndex(stage) {
+    const i = stageOrder.indexOf(stage);
+    if (i >= 0) return i;
+    if (stage === wonStage) return stageOrder.length;
+    return -1;
+  }
+
+  const funnelBody = document.getElementById("bodas-funnel-body");
+  if (funnelBody) {
+    const rows = stageOrder.map((stage, idx) => {
+      const inStage = leads.filter((l) => l.stage === stage).length;
+      const atOrBeyond = leads.filter((l) => stageIndex(l.stage) >= idx).length;
+      const stageCost = atOrBeyond > 0 ? bodasSpend / atOrBeyond : 0;
+      return `
+        <tr>
+          <td class="col-campaign">${escapeHtml(stage)}</td>
+          <td class="num">${fmtNum(inStage)}</td>
+          <td class="num">${fmtNum(atOrBeyond)}</td>
+          <td class="num">${atOrBeyond > 0 ? fmtMoney2(stageCost) : "—"}</td>
+        </tr>`;
+    });
+    // Fila final: ganados (el fondo del funnel)
+    rows.push(`
+      <tr style="font-weight:600;">
+        <td class="col-campaign">${escapeHtml(wonStage)}</td>
+        <td class="num">${fmtNum(won)}</td>
+        <td class="num">${fmtNum(won)}</td>
+        <td class="num">${won > 0 ? fmtMoney2(bodasSpend / won) : "—"}</td>
+      </tr>`);
+    funnelBody.innerHTML = rows.join("") || `<tr><td colspan="4" class="empty">Sin leads en el pipeline de Bodas Holbox.</td></tr>`;
+  }
+
+  const respBody = document.getElementById("bodas-resp-body");
+  if (respBody) {
+    const byResp = new Map();
+    for (const l of leads) {
+      if (!byResp.has(l.responsableName)) byResp.set(l.responsableName, { total: 0, won: 0, lost: 0 });
+      const r = byResp.get(l.responsableName);
+      r.total++;
+      if (l.stage === wonStage) r.won++;
+      if (l.stage === lostStage) r.lost++;
+    }
+    const rows = Array.from(byResp.entries()).sort((a, b) => b[1].total - a[1].total);
+    respBody.innerHTML = rows.map(([name, r]) => {
+      const rate = (r.won + r.lost) > 0 ? (r.won / (r.won + r.lost)) * 100 : null;
+      return `
+        <tr>
+          <td>${escapeHtml(name)}</td>
+          <td class="num">${fmtNum(r.total)}</td>
+          <td class="num">${fmtNum(r.won)}</td>
+          <td class="num">${fmtNum(r.lost)}</td>
+          <td class="num">${rate === null ? "—" : fmtPct(rate)}</td>
+        </tr>`;
+    }).join("") || `<tr><td colspan="5" class="empty">Sin datos.</td></tr>`;
+  }
+}
+
+function setText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
 }
 
 // Metadatos de cada KPI principal: cómo formatearlo y si "subir" es bueno,
