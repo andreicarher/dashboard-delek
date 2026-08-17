@@ -93,6 +93,8 @@ h1 {
   transition: background 0.15s ease, color 0.15s ease;
 }
 .btn:hover { background: var(--ocean); color: var(--paper); }
+.btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.btn:disabled:hover { background: transparent; color: var(--ocean); }
 .btn:focus-visible, select:focus-visible, input:focus-visible, button:focus-visible {
   outline: 2px solid var(--clay);
   outline-offset: 2px;
@@ -285,8 +287,21 @@ td.num, th.num { text-align: right; font-family: 'IBM Plex Mono', monospace; fon
   padding: 1px 6px;
   border-radius: 999px;
 }
+/* Etiquetas de tipo de campaña — para distinguir de un vistazo el canal
+   (WhatsApp/Leadform) y la etapa (Awareness vs. Conversion). */
+.tag-whatsapp { background: #daf0e2; color: #1f7a45; border-color: transparent; }
+.tag-leadform { background: #dcebee; color: #1f4b54; border-color: transparent; }
+.tag-awareness { background: #f7e6bf; color: #8a5a1f; border-color: transparent; }
+.tag-conversion { background: var(--sand); color: #57544d; border-color: transparent; }
 .empty { text-align: center; color: var(--muted); padding: 30px !important; }
 .table-scroll { max-height: 420px; overflow: auto; }
+.pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 12px;
+}
 
 /* ---------- Alerta de fatiga (Frequency) ---------- */
 .fatigue-badge { color: var(--clay); }
@@ -420,13 +435,25 @@ footer {
       <select id="filter-objective"><option>Cargando…</option></select>
     </div>
     <div class="filter-group">
+      <label for="filter-period">Periodo</label>
+      <select id="filter-period">
+        <option value="7d">Últimos 7 días</option>
+        <option value="14d">Últimos 14 días</option>
+        <option value="30d" selected>Últimos 30 días</option>
+        <option value="last_month">Mes pasado</option>
+        <option value="this_month">Mes actual</option>
+        <option value="all">Todo el histórico</option>
+        <option value="custom">Personalizado…</option>
+      </select>
+    </div>
+    <div class="filter-group" id="custom-range-group" hidden>
       <label for="filter-from">Desde</label>
       <input type="date" id="filter-from" />
     </div>
-    <div class="filter-group" style="align-self:flex-end">
+    <div class="filter-group" id="custom-range-sep" hidden style="align-self:flex-end">
       <span class="date-sep">—</span>
     </div>
-    <div class="filter-group">
+    <div class="filter-group" id="custom-range-to-group" hidden>
       <label for="filter-to">Hasta</label>
       <input type="date" id="filter-to" />
     </div>
@@ -596,11 +623,14 @@ const state = {
   filters: {
     funnel: "all",
     objective: "all",
+    period: "30d",
     granularity: "day", // day | week | month
     from: null,
     to: null,
   },
   charts: {},
+  geoData: {},   // s -> filas completas ya consultadas (cache para paginar sin refetch)
+  geoPage: {},   // s -> índice de página actual (0-based)
 };
 
 // ---------- 1. CARGA DE DATOS (gviz JSONP) ----------
@@ -931,10 +961,10 @@ function buildPropertySections() {
       </div>
       <p class="section-label" style="margin-top:4px;">Desglose por tipo de lead</p>
       <div class="kpi-grid-secondary" aria-label="Desglose de leads por tipo — ${escapeHtml(prop)}">
-        <div class="kpi-card"><p class="kpi-label">Leads (Formulario)</p><p class="kpi-value" id="kpi-formleads-${s}">—</p></div>
-        <div class="kpi-card"><p class="kpi-label">Costo por lead (Form)</p><p class="kpi-value" id="kpi-formcpl-${s}">—</p></div>
-        <div class="kpi-card"><p class="kpi-label">Conversaciones (WhatsApp)</p><p class="kpi-value" id="kpi-waconvos-${s}">—</p></div>
-        <div class="kpi-card"><p class="kpi-label">Costo por conversación</p><p class="kpi-value" id="kpi-wacpc-${s}">—</p></div>
+        <div class="kpi-card"><p class="kpi-label">Leads (Formulario)</p><p class="kpi-value" id="kpi-formleads-${s}">—</p><span class="kpi-delta neutral" id="kpi-delta-formleads-${s}"></span></div>
+        <div class="kpi-card"><p class="kpi-label">Costo por lead (Form)</p><p class="kpi-value" id="kpi-formcpl-${s}">—</p><span class="kpi-delta neutral" id="kpi-delta-formcpl-${s}"></span></div>
+        <div class="kpi-card"><p class="kpi-label">Conversaciones (WhatsApp)</p><p class="kpi-value" id="kpi-waconvos-${s}">—</p><span class="kpi-delta neutral" id="kpi-delta-waconvos-${s}"></span></div>
+        <div class="kpi-card"><p class="kpi-label">Costo por conversación</p><p class="kpi-value" id="kpi-wacpc-${s}">—</p><span class="kpi-delta neutral" id="kpi-delta-wacpc-${s}"></span></div>
       </div>
 
       <div class="charts-row">
@@ -1001,6 +1031,11 @@ function buildPropertySections() {
           </table>
         </div>
         <p id="geo-note-${s}" style="color:var(--muted); font-size:12.5px; margin:10px 0 0;"></p>
+        <div id="geo-pagination-${s}" class="pagination-bar" hidden>
+          <button class="btn" id="geo-prev-${s}" style="padding:4px 12px; font-size:12px;">← Anterior</button>
+          <span id="geo-page-label-${s}" style="font-family:'IBM Plex Mono', monospace; font-size:12px; color:var(--muted);"></span>
+          <button class="btn" id="geo-next-${s}" style="padding:4px 12px; font-size:12px;">Siguiente →</button>
+        </div>
       </div>
 
       <div class="table-panel" style="margin-bottom:20px;">
@@ -1033,7 +1068,7 @@ function buildPropertySections() {
             <thead>
               <tr>
                 <th>Campaña</th>
-                <th>Etapa</th>
+                <th>Etapa / Canal</th>
                 <th class="num">Inversión</th>
                 <th class="num">Leads</th>
                 <th class="num">CPL</th>
@@ -1182,13 +1217,73 @@ function populateFilterOptions() {
   fillSelect("filter-funnel", funnels, "Todas las etapas");
   fillSelect("filter-objective", objectives, "Todos los objetivos");
 
-  const dates = state.raw.map((r) => r.date).sort((a, b) => a - b);
-  if (dates.length) {
-    state.filters.from = dates[0];
-    state.filters.to = dates[dates.length - 1];
-    document.getElementById("filter-from").value = toInputDate(dates[0]);
-    document.getElementById("filter-to").value = toInputDate(dates[dates.length - 1]);
+  applyPeriodPreset(state.filters.period);
+}
+
+function addDays(date, days) {
+  const d = new Date(date);
+  d.setDate(d.getDate() + days);
+  return d;
+}
+
+// Traduce un preset de periodo a un rango {from, to} concreto, tomando "hoy"
+// como referencia (no la última fecha con datos) — así el selector se
+// comporta igual que cualquier dashboard estándar (Amani, GA, etc.).
+function periodPresetToRange(preset) {
+  const today = new Date();
+  const to = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
+  switch (preset) {
+    case "7d": return { from: addDays(to, -6), to };
+    case "14d": return { from: addDays(to, -13), to };
+    case "30d": return { from: addDays(to, -29), to };
+    case "last_month": {
+      const from = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+      const lastDayPrevMonth = new Date(today.getFullYear(), today.getMonth(), 0, 23, 59, 59, 999);
+      return { from, to: lastDayPrevMonth };
+    }
+    case "this_month": {
+      const from = new Date(today.getFullYear(), today.getMonth(), 1);
+      return { from, to };
+    }
+    case "all":
+      return { from: null, to: null };
+    default:
+      return null; // "custom": no tocar, el usuario controla Desde/Hasta a mano
   }
+}
+
+function applyPeriodPreset(preset) {
+  state.filters.period = preset;
+  document.getElementById("filter-period").value = preset;
+
+  const customGroup = document.getElementById("custom-range-group");
+  const customSep = document.getElementById("custom-range-sep");
+  const customTo = document.getElementById("custom-range-to-group");
+  const isCustom = preset === "custom";
+  customGroup.hidden = !isCustom;
+  customSep.hidden = !isCustom;
+  customTo.hidden = !isCustom;
+
+  if (isCustom) {
+    // Al entrar a "Personalizado", arrancamos con el rango completo de datos
+    // disponibles como punto de partida cómodo para que el usuario ajuste.
+    const dates = state.raw.map((r) => r.date).sort((a, b) => a - b);
+    const from = state.filters.from || dates[0] || new Date();
+    const to = state.filters.to || dates[dates.length - 1] || new Date();
+    state.filters.from = from;
+    state.filters.to = to;
+    document.getElementById("filter-from").value = toInputDate(from);
+    document.getElementById("filter-to").value = toInputDate(to);
+    applyFilters();
+    return;
+  }
+
+  const range = periodPresetToRange(preset);
+  state.filters.from = range.from;
+  state.filters.to = range.to;
+  if (range.from) document.getElementById("filter-from").value = toInputDate(range.from);
+  if (range.to) document.getElementById("filter-to").value = toInputDate(range.to);
+  applyFilters();
 }
 
 function uniqueSorted(arr) {
@@ -1368,7 +1463,10 @@ function groupByCreative(rows) {
     // detectar fatiga es su valor más actual, no diluirlo con días pasados.
     const sortedByDate = [...g.rows].sort((a, b) => a.date - b.date);
     const currentFrequency = sortedByDate.length ? sortedByDate[sortedByDate.length - 1].frequency : 0;
-    return { ...g, ...computeKpis(g.rows), currentFrequency, language: detectAdLanguage(g.ad) };
+    return {
+      ...g, ...computeKpis(g.rows), currentFrequency, language: detectAdLanguage(g.ad),
+      funnel: g.rows[0]?.funnel, objective: g.rows[0]?.objective,
+    };
   });
 }
 
@@ -1420,13 +1518,13 @@ function renderAll() {
     const s = slug(prop);
     const rows = state.filtered.filter((r) => r.property === prop);
     renderKpis(rows, s, prop);
-    renderLeadSplit(rows, s);
+    renderLeadSplit(rows, s, prop);
     renderTrendChart(rows, s);
     renderFunnelChart(rows, s);
     renderLanguageTable(rows, s);
     renderPacing(prop, s);
-    renderTopAds(rows, s);
-    renderTable(rows, s);
+    renderTopAds(rows, s, prop);
+    renderTable(rows, s, prop);
     renderKommoPipelinePanel(prop, s);
   }
   renderBodasHolboxPanel();
@@ -1462,6 +1560,7 @@ function renderHorizontalBarChart(canvasId, chartKey, labels, values, { mutedLab
   const colors = labels.map((label, i) =>
     mutedLabel && normalizeText(label) === normalizeText(mutedLabel) ? "#c9c2b3" : palette[i % palette.length]
   );
+  const maxVal = Math.max(1, ...values);
 
   state.charts[chartKey] = new Chart(ctx, {
     type: "bar",
@@ -1472,8 +1571,7 @@ function renderHorizontalBarChart(canvasId, chartKey, labels, values, { mutedLab
         backgroundColor: colors,
         borderRadius: 4,
         showLabels: true,
-        labelColor: "#57544d",
-        labelOffset: 0,
+        labelColor: "#3a3530",
         formatLabel: (v) => fmtNum(v),
       }],
     },
@@ -1481,10 +1579,12 @@ function renderHorizontalBarChart(canvasId, chartKey, labels, values, { mutedLab
       indexAxis: "y",
       responsive: true,
       maintainAspectRatio: false,
-      layout: { padding: { right: 34 } },
+      layout: { padding: { right: 56 } },
       plugins: { legend: { display: false } },
       scales: {
-        x: { beginAtZero: true, ticks: { color: "#8a8175" }, grid: { color: "rgba(29,42,46,0.06)" } },
+        // suggestedMax deja aire a la derecha de la barra más larga para
+        // que su etiqueta nunca choque contra el borde del gráfico.
+        x: { beginAtZero: true, suggestedMax: maxVal * 1.25, ticks: { color: "#8a8175" }, grid: { color: "rgba(29,42,46,0.06)" } },
         y: { ticks: { color: "#3a3530", font: { family: "Inter", size: 12 } }, grid: { display: false } },
       },
     },
@@ -1615,6 +1715,7 @@ function renderBodasFunnelChart(funnelStages) {
 
   const topOfFunnel = funnelStages[0]?.atOrBeyond || 0;
   const palette = ["#1f4b54", "#2c5f68", "#3d7a80", "#5c9299", "#7fabb0", "#8fb6ac", "#3d7a55"];
+  const maxVal = Math.max(1, ...funnelStages.map((f) => f.atOrBeyond));
 
   state.charts["bodas-funnel"] = new Chart(ctx, {
     type: "bar",
@@ -1625,11 +1726,10 @@ function renderBodasFunnelChart(funnelStages) {
         backgroundColor: funnelStages.map((_, i) => palette[i % palette.length]),
         borderRadius: 4,
         showLabels: true,
-        labelColor: "#faf8f3",
-        labelOffset: 0,
+        labelColor: "#3a3530",
         formatLabel: (v) => {
           const pct = topOfFunnel > 0 ? ((v / topOfFunnel) * 100).toFixed(0) : "0";
-          return `${v}  (${pct}%)`;
+          return `${v} (${pct}%)`;
         },
       }],
     },
@@ -1637,10 +1737,10 @@ function renderBodasFunnelChart(funnelStages) {
       indexAxis: "y",
       responsive: true,
       maintainAspectRatio: false,
-      layout: { padding: { right: 40 } },
+      layout: { padding: { right: 66 } },
       plugins: { legend: { display: false } },
       scales: {
-        x: { beginAtZero: true, ticks: { color: "#8a8175" }, grid: { color: "rgba(29,42,46,0.06)" } },
+        x: { beginAtZero: true, suggestedMax: maxVal * 1.3, ticks: { color: "#8a8175" }, grid: { color: "rgba(29,42,46,0.06)" } },
         y: { ticks: { color: "#3a3530", font: { family: "Inter", size: 12.5 } }, grid: { display: false } },
       },
     },
@@ -1662,6 +1762,21 @@ const KPI_META = {
   ctr: { fmt: fmtPct, goodDirection: "up" },
   cpm: { fmt: fmtMoney2, goodDirection: "down" },
 };
+
+// Versión compacta del delta, para insertar directo en una celda de tabla
+// (a diferencia de renderKpiDelta, que actualiza un elemento por id).
+function deltaBadgeHtml(curr, prev, goodDirection = "neutral") {
+  const change = pctChange(curr, prev);
+  if (change === null) return '<span class="kpi-delta neutral">—</span>';
+  if (change === Infinity) return '<span class="kpi-delta neutral">Nuevo</span>';
+  const arrow = change > 0 ? "▲" : change < 0 ? "▼" : "•";
+  let cls = "neutral";
+  if (goodDirection !== "neutral" && change !== 0) {
+    const isGood = (goodDirection === "up" && change > 0) || (goodDirection === "down" && change < 0);
+    cls = isGood ? "up" : "down";
+  }
+  return `<span class="kpi-delta ${cls}" style="margin-top:0;">${arrow} ${Math.abs(change).toFixed(0)}%</span>`;
+}
 
 function renderKpiDelta(id, curr, prev, goodDirection) {
   const el = document.getElementById(id);
@@ -1697,17 +1812,19 @@ function renderKpis(rows, s, prop) {
   }
 }
 
-function renderLeadSplit(rows, s) {
+function renderLeadSplit(rows, s, prop) {
   const split = computeLeadSplit(rows);
+  const prevSplit = computeLeadSplit(getPreviousPeriodRows(prop));
   const map = {
-    [`kpi-formleads-${s}`]: fmtNum(split.formLeads),
-    [`kpi-formcpl-${s}`]: split.formLeads > 0 ? fmtMoney2(split.formCpl) : "—",
-    [`kpi-waconvos-${s}`]: fmtNum(split.waConvos),
-    [`kpi-wacpc-${s}`]: split.waConvos > 0 ? fmtMoney2(split.waCpc) : "—",
+    formleads: [fmtNum(split.formLeads), split.formLeads, prevSplit.formLeads, "up"],
+    formcpl: [split.formLeads > 0 ? fmtMoney2(split.formCpl) : "—", split.formCpl, prevSplit.formCpl, "down"],
+    waconvos: [fmtNum(split.waConvos), split.waConvos, prevSplit.waConvos, "up"],
+    wacpc: [split.waConvos > 0 ? fmtMoney2(split.waCpc) : "—", split.waCpc, prevSplit.waCpc, "down"],
   };
-  for (const [id, val] of Object.entries(map)) {
-    const el = document.getElementById(id);
-    if (el) el.textContent = val;
+  for (const [key, [text, curr, prev, dir]] of Object.entries(map)) {
+    const el = document.getElementById(`kpi-${key}-${s}`);
+    if (el) el.textContent = text;
+    renderKpiDelta(`kpi-delta-${key}-${s}`, curr, prev, dir);
   }
 }
 
@@ -1785,6 +1902,8 @@ function bindGeoPanelEvents() {
     const s = slug(prop);
     const daysSelect = document.getElementById(`geo-days-${s}`);
     const refreshBtn = document.getElementById(`geo-refresh-${s}`);
+    const prevBtn = document.getElementById(`geo-prev-${s}`);
+    const nextBtn = document.getElementById(`geo-next-${s}`);
     if (refreshBtn) {
       refreshBtn.addEventListener("click", () => {
         loadGeoPanel(prop, s, parseInt(daysSelect?.value, 10) || 30);
@@ -1795,10 +1914,24 @@ function bindGeoPanelEvents() {
         loadGeoPanel(prop, s, parseInt(daysSelect.value, 10) || 30);
       });
     }
+    if (prevBtn) {
+      prevBtn.addEventListener("click", () => {
+        state.geoPage[s] = (state.geoPage[s] || 0) - 1;
+        renderGeoPage(s);
+      });
+    }
+    if (nextBtn) {
+      nextBtn.addEventListener("click", () => {
+        state.geoPage[s] = (state.geoPage[s] || 0) + 1;
+        renderGeoPage(s);
+      });
+    }
     // Primera carga automática al abrir el dashboard.
     loadGeoPanel(prop, s, 30);
   }
 }
+
+const GEO_PAGE_SIZE = 10;
 
 async function loadGeoPanel(prop, s, days = 30) {
   const tbody = document.getElementById(`geo-body-${s}`);
@@ -1807,6 +1940,7 @@ async function loadGeoPanel(prop, s, days = 30) {
 
   tbody.innerHTML = `<tr><td colspan="7" class="empty">Consultando la API de Meta Ads…</td></tr>`;
   if (note) note.textContent = "";
+  document.getElementById(`geo-pagination-${s}`).hidden = true;
 
   try {
     const resp = await fetch(`/api/meta-geo?property=${encodeURIComponent(prop)}&days=${days}`);
@@ -1823,18 +1957,9 @@ async function loadGeoPanel(prop, s, days = 30) {
       return;
     }
 
-    const rows = json.rows || [];
-    tbody.innerHTML = rows.map((r) => `
-      <tr>
-        <td class="col-campaign">${escapeHtml(r.region)}</td>
-        <td class="num">${fmtMoney2(r.spend)}</td>
-        <td class="num">${fmtNum(r.impressions)}</td>
-        <td class="num">${fmtNum(r.reach)}</td>
-        <td class="num">${fmtPct(r.ctr)}</td>
-        <td class="num">${fmtNum(r.leads)}</td>
-        <td class="num">${r.leads > 0 ? fmtMoney2(r.spend / r.leads) : "—"}</td>
-      </tr>
-    `).join("") || `<tr><td colspan="7" class="empty">Sin datos para este rango.</td></tr>`;
+    state.geoData[s] = json.rows || [];
+    state.geoPage[s] = 0;
+    renderGeoPage(s);
 
     if (note) {
       note.textContent = json.cached
@@ -1844,6 +1969,49 @@ async function loadGeoPanel(prop, s, days = 30) {
   } catch (err) {
     tbody.innerHTML = `<tr><td colspan="7" class="empty">No se pudo conectar con /api/meta-geo.</td></tr>`;
     if (note) note.textContent = "Esto es normal si aún no lo has desplegado en Vercel con la carpeta /api incluida.";
+  }
+}
+
+// Dibuja solo la página actual (10 filas) de los datos geográficos ya
+// consultados — cambiar de página no vuelve a golpear la API de Meta.
+function renderGeoPage(s) {
+  const rows = state.geoData[s] || [];
+  const tbody = document.getElementById(`geo-body-${s}`);
+  const pagBar = document.getElementById(`geo-pagination-${s}`);
+  const pageLabel = document.getElementById(`geo-page-label-${s}`);
+  const prevBtn = document.getElementById(`geo-prev-${s}`);
+  const nextBtn = document.getElementById(`geo-next-${s}`);
+  if (!tbody) return;
+
+  const totalPages = Math.max(1, Math.ceil(rows.length / GEO_PAGE_SIZE));
+  let page = state.geoPage[s] || 0;
+  page = Math.min(Math.max(page, 0), totalPages - 1);
+  state.geoPage[s] = page;
+
+  const start = page * GEO_PAGE_SIZE;
+  const pageRows = rows.slice(start, start + GEO_PAGE_SIZE);
+
+  tbody.innerHTML = pageRows.map((r) => `
+    <tr>
+      <td class="col-campaign">${escapeHtml(r.region)}</td>
+      <td class="num">${fmtMoney2(r.spend)}</td>
+      <td class="num">${fmtNum(r.impressions)}</td>
+      <td class="num">${fmtNum(r.reach)}</td>
+      <td class="num">${fmtPct(r.ctr)}</td>
+      <td class="num">${fmtNum(r.leads)}</td>
+      <td class="num">${r.leads > 0 ? fmtMoney2(r.spend / r.leads) : "—"}</td>
+    </tr>
+  `).join("") || `<tr><td colspan="7" class="empty">Sin datos para este rango.</td></tr>`;
+
+  if (pagBar) {
+    pagBar.hidden = rows.length <= GEO_PAGE_SIZE;
+    if (pageLabel) {
+      const from = rows.length ? start + 1 : 0;
+      const to = Math.min(start + GEO_PAGE_SIZE, rows.length);
+      pageLabel.textContent = `${from}–${to} de ${rows.length}`;
+    }
+    if (prevBtn) prevBtn.disabled = page === 0;
+    if (nextBtn) nextBtn.disabled = page >= totalPages - 1;
   }
 }
 
@@ -1857,14 +2025,15 @@ const simpleDataLabelsPlugin = {
   id: "simpleDataLabels",
   afterDatasetsDraw(chart) {
     const { ctx } = chart;
+    const isHorizontalBar = chart.options.indexAxis === "y";
     chart.data.datasets.forEach((dataset, dIdx) => {
       if (!dataset.showLabels) return;
       const meta = chart.getDatasetMeta(dIdx);
       if (meta.hidden) return;
       const isArc = meta.type === "doughnut" || meta.type === "pie";
+      const isHBar = isHorizontalBar && meta.type === "bar";
       ctx.save();
       ctx.font = "600 10px 'IBM Plex Mono', monospace";
-      ctx.textAlign = "center";
       meta.data.forEach((element, i) => {
         const raw = dataset.data[i];
         if (raw === undefined || raw === null) return;
@@ -1874,11 +2043,22 @@ const simpleDataLabelsPlugin = {
         if (isArc) {
           const pos = element.tooltipPosition();
           x = pos.x; y = pos.y;
+          ctx.textAlign = "center";
           ctx.textBaseline = "middle";
           ctx.fillStyle = dataset.labelColor || "#faf8f3";
+        } else if (isHBar) {
+          // Barra horizontal: la etiqueta va AFUERA, a la derecha del final de
+          // la barra — así una barra corta (valor chico) nunca amontona su
+          // número contra el borde o lo tapa una barra vecina.
+          const p = element.getProps(["x", "y"], true);
+          x = p.x + 8; y = p.y;
+          ctx.textAlign = "left";
+          ctx.textBaseline = "middle";
+          ctx.fillStyle = dataset.labelColor || "#3a3530";
         } else {
           const p = element.getProps(["x", "y"], true);
           x = p.x; y = p.y + (dataset.labelOffset ?? -6);
+          ctx.textAlign = "center";
           ctx.textBaseline = "bottom";
           ctx.fillStyle = dataset.labelColor || "#57544d";
         }
@@ -1903,6 +2083,7 @@ function renderTrendChart(rows, s) {
   // ni se corte contra el borde del gráfico.
   const maxSpend = Math.max(1, ...grouped.map((g) => g.spend));
   const maxLeads = Math.max(1, ...grouped.map((g) => g.leads));
+  const maxCpl = Math.max(1, ...grouped.map((g) => g.cpl));
 
   state.charts[`trend-${s}`] = new Chart(ctx, {
     type: "bar",
@@ -1916,7 +2097,7 @@ function renderTrendChart(rows, s) {
           backgroundColor: "rgba(31,75,84,0.75)",
           borderRadius: 3,
           yAxisID: "y",
-          order: 2,
+          order: 3,
           showLabels: true,
           labelColor: "#1f4b54",
           labelOffset: -6,
@@ -1926,16 +2107,32 @@ function renderTrendChart(rows, s) {
           type: "line",
           label: "Leads",
           data: grouped.map((g) => g.leads),
-          borderColor: "#c4694e",
-          backgroundColor: "#c4694e",
+          borderColor: "#c9932f",
+          backgroundColor: "#c9932f",
           tension: 0.35,
           pointRadius: 3,
           yAxisID: "y1",
           order: 1,
           showLabels: true,
-          labelColor: "#c4694e",
+          labelColor: "#a87821",
           labelOffset: -12,
           formatLabel: (v) => (v > 0 ? String(Math.round(v)) : ""),
+        },
+        {
+          type: "line",
+          label: "CPL",
+          data: grouped.map((g) => g.cpl),
+          borderColor: "#c4694e",
+          backgroundColor: "#c4694e",
+          borderDash: [4, 3],
+          tension: 0.35,
+          pointRadius: 3,
+          yAxisID: "y2",
+          order: 2,
+          showLabels: true,
+          labelColor: "#c4694e",
+          labelOffset: 14,
+          formatLabel: (v) => (v > 0 ? fmtMoney2(v) : ""),
         },
       ],
     },
@@ -1966,6 +2163,14 @@ function renderTrendChart(rows, s) {
           ticks: { color: "#8a8175" },
           grid: { display: false },
           title: { display: true, text: "Leads", color: "#8a8175" },
+        },
+        y2: {
+          position: "right",
+          beginAtZero: true,
+          suggestedMax: maxCpl * 1.35,
+          ticks: { color: "#8a8175", callback: (v) => "$" + v.toLocaleString("es-MX") },
+          grid: { display: false },
+          title: { display: true, text: "CPL", color: "#8a8175" },
         },
       },
     },
@@ -2008,7 +2213,7 @@ function renderFunnelChart(rows, s) {
   });
 }
 
-function renderTopAds(rows, s) {
+function renderTopAds(rows, s, prop) {
   const best = bestAdPerCampaign(rows);
   const threshold = DASHBOARD_CONFIG.frequencyWarningThreshold;
   const tbody = document.getElementById(`top-ads-body-${s}`);
@@ -2018,12 +2223,16 @@ function renderTopAds(rows, s) {
     const freqCell = b.currentFrequency > 0
       ? `${fatigued ? '<span class="fatigue-badge" title="Frecuencia alta: la audiencia ya vio este anuncio varias veces, puede estar fatigándose">⚠</span> ' : ""}${b.currentFrequency.toFixed(1)}`
       : "—";
+    const prevRows = getPreviousPeriodRows(prop).filter(
+      (r) => r.campaign === b.campaign && r.adset === b.adset && r.ad === b.ad
+    );
+    const prevSpend = sum(prevRows, "spend");
     return `
     <tr>
-      <td class="col-campaign">${escapeHtml(b.campaign)}</td>
+      <td class="col-campaign">${escapeHtml(b.campaign)}<br>${funnelBadgeHtml(b.funnel)} ${objectiveBadgeHtml(b.objective)}</td>
       <td>${escapeHtml(b.ad)}</td>
       <td>${escapeHtml(b.adset)}</td>
-      <td class="num">${fmtMoney2(b.spend)}</td>
+      <td class="num">${fmtMoney2(b.spend)}<br>${deltaBadgeHtml(b.spend, prevSpend)}</td>
       <td class="num">${fmtNum(b.leads)}</td>
       <td class="num">${b.leads > 0 ? fmtMoney2(b.cpl) : "—"}</td>
       <td class="num">${fmtPct(b.ctr)}</td>
@@ -2032,21 +2241,38 @@ function renderTopAds(rows, s) {
   }).join("") || `<tr><td colspan="8" class="empty">Sin datos para este filtro.</td></tr>`;
 }
 
-function renderTable(rows, s) {
+// Etiquetas visuales para distinguir de un vistazo el canal (WhatsApp vs.
+// Leadform) y la etapa (Awareness vs. Conversion) de cada campaña.
+function objectiveBadgeHtml(objective) {
+  const o = normalizeText(objective);
+  if (o === "MENSAJES") return '<span class="tag tag-whatsapp">WhatsApp</span>';
+  if (o === "LEADFORM") return '<span class="tag tag-leadform">Leadform</span>';
+  return `<span class="tag">${escapeHtml(objective || "—")}</span>`;
+}
+function funnelBadgeHtml(funnel) {
+  const f = normalizeText(funnel);
+  if (f === "AWARENESS") return '<span class="tag tag-awareness">Awareness</span>';
+  return `<span class="tag tag-conversion">${escapeHtml(funnel || "—")}</span>`;
+}
+
+function renderTable(rows, s, prop) {
   const groups = groupByCampaign(rows);
   const tbody = document.getElementById(`table-body-${s}`);
   if (!tbody) return;
-  tbody.innerHTML = groups.map((g) => `
+  tbody.innerHTML = groups.map((g) => {
+    const prevRows = getPreviousPeriodRows(prop).filter((r) => r.campaign === g.campaign);
+    const prevSpend = sum(prevRows, "spend");
+    return `
     <tr>
       <td class="col-campaign">${escapeHtml(g.campaign)}</td>
-      <td>${escapeHtml(g.funnel)}</td>
-      <td class="num">${fmtMoney2(g.spend)}</td>
+      <td>${funnelBadgeHtml(g.funnel)} ${objectiveBadgeHtml(g.objective)}</td>
+      <td class="num">${fmtMoney2(g.spend)}<br>${deltaBadgeHtml(g.spend, prevSpend)}</td>
       <td class="num">${fmtNum(g.leads)}</td>
       <td class="num">${g.leads > 0 ? fmtMoney2(g.cpl) : "—"}</td>
       <td class="num">${fmtPct(g.ctr)}</td>
       <td class="num">${fmtMoney2(g.cpm)}</td>
-    </tr>
-  `).join("") || `<tr><td colspan="7" class="empty">Sin datos para este filtro.</td></tr>`;
+    </tr>`;
+  }).join("") || `<tr><td colspan="7" class="empty">Sin datos para este filtro.</td></tr>`;
 }
 
 function escapeHtml(s) {
@@ -2062,6 +2288,9 @@ function bindEvents() {
   });
   document.getElementById("filter-objective").addEventListener("change", (e) => {
     state.filters.objective = e.target.value; applyFilters();
+  });
+  document.getElementById("filter-period").addEventListener("change", (e) => {
+    applyPeriodPreset(e.target.value);
   });
   document.getElementById("filter-from").addEventListener("change", (e) => {
     state.filters.from = e.target.value ? new Date(e.target.value) : null; applyFilters();
