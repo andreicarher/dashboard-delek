@@ -1049,18 +1049,14 @@ function buildPropertySections() {
       </div>
       <div class="table-panel" style="margin-bottom:20px;">
         <h2>Pipeline comercial <span class="tag" style="margin-left:6px;">vía Kommo</span></h2>
-        <div class="charts-row-2" style="margin-bottom:0;">
-          <div class="table-scroll" style="max-height:280px;">
-            <table>
-              <thead><tr><th>Etapa</th><th class="num">Leads</th></tr></thead>
-              <tbody id="kommo-stage-body-${s}"><tr><td colspan="2" class="empty">Cargando datos…</td></tr></tbody>
-            </table>
+        <div class="charts-row-2" style="margin-bottom:0; padding: 4px 20px 20px;">
+          <div>
+            <p class="section-label">Leads por etapa</p>
+            <div class="chart-wrap" id="kommo-stage-wrap-${s}" style="height:260px;"><canvas id="chart-kommo-stage-${s}"></canvas></div>
           </div>
-          <div class="table-scroll" style="max-height:280px;">
-            <table>
-              <thead><tr><th>Responsable</th><th class="num">Leads</th></tr></thead>
-              <tbody id="kommo-resp-body-${s}"><tr><td colspan="2" class="empty">Cargando datos…</td></tr></tbody>
-            </table>
+          <div>
+            <p class="section-label">Leads por responsable</p>
+            <div class="chart-wrap" id="kommo-resp-wrap-${s}" style="height:260px;"><canvas id="chart-kommo-resp-${s}"></canvas></div>
           </div>
         </div>
       </div>
@@ -1165,6 +1161,8 @@ function showPropertyTab(prop) {
   requestAnimationFrame(() => {
     if (state.charts[`trend-${s}`]) state.charts[`trend-${s}`].resize();
     if (state.charts[`funnel-${s}`]) state.charts[`funnel-${s}`].resize();
+    if (state.charts[`kommo-stage-${s}`]) state.charts[`kommo-stage-${s}`].resize();
+    if (state.charts[`kommo-resp-${s}`]) state.charts[`kommo-resp-${s}`].resize();
     if (state.charts["bodas-funnel"]) state.charts["bodas-funnel"].resize();
   });
 }
@@ -1451,24 +1449,65 @@ function groupCount(arr, keyFn) {
 // responsable — aquí NO se calcula costo por etapa (una sola campaña de
 // actividades alimenta todas las categorías, así que no hay forma de
 // atribuir gasto a "Wellness" vs "Restaurante" de forma confiable).
-function renderKommoPipelinePanel(prop, s) {
-  const stageBody = document.getElementById(`kommo-stage-body-${s}`);
-  const respBody = document.getElementById(`kommo-resp-body-${s}`);
-  if (!stageBody || !respBody) return;
+// Gráfico de barras horizontales genérico y reutilizable — mismo estilo que
+// el funnel de Bodas Holbox. `highlightMuted` permite pintar en gris una
+// categoría específica (ej. "Sin etapa") para distinguirla de las reales.
+function renderHorizontalBarChart(canvasId, chartKey, labels, values, { mutedLabel } = {}) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  destroyChart(chartKey);
 
+  const palette = ["#1f4b54", "#3d7a80", "#5c9299", "#8fb6ac", "#c4694e", "#a97a52", "#7c8a6e"];
+  const colors = labels.map((label, i) =>
+    mutedLabel && normalizeText(label) === normalizeText(mutedLabel) ? "#c9c2b3" : palette[i % palette.length]
+  );
+
+  state.charts[chartKey] = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        backgroundColor: colors,
+        borderRadius: 4,
+        showLabels: true,
+        labelColor: "#57544d",
+        labelOffset: 0,
+        formatLabel: (v) => fmtNum(v),
+      }],
+    },
+    options: {
+      indexAxis: "y",
+      responsive: true,
+      maintainAspectRatio: false,
+      layout: { padding: { right: 34 } },
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { beginAtZero: true, ticks: { color: "#8a8175" }, grid: { color: "rgba(29,42,46,0.06)" } },
+        y: { ticks: { color: "#3a3530", font: { family: "Inter", size: 12 } }, grid: { display: false } },
+      },
+    },
+  });
+}
+
+function renderKommoPipelinePanel(prop, s) {
   const leads = state.kommoLeads.filter((l) => l.pipeline === prop.trim().toUpperCase());
 
   const byStage = groupCount(leads, (l) => l.stage);
-  const stageRows = Array.from(byStage.entries()).sort((a, b) => b[1] - a[1]);
-  stageBody.innerHTML = stageRows.map(([stage, count]) => `
-    <tr><td>${escapeHtml(stage)}</td><td class="num">${fmtNum(count)}</td></tr>
-  `).join("") || `<tr><td colspan="2" class="empty">Sin leads registrados en Kommo para esta plaza.</td></tr>`;
+  const stageEntries = Array.from(byStage.entries()).sort((a, b) => b[1] - a[1]);
+  renderHorizontalBarChart(
+    `chart-kommo-stage-${s}`, `kommo-stage-${s}`,
+    stageEntries.map(([k]) => k), stageEntries.map(([, v]) => v),
+    { mutedLabel: "Sin etapa" }
+  );
 
   const byResp = groupCount(leads, (l) => l.responsableName);
-  const respRows = Array.from(byResp.entries()).sort((a, b) => b[1] - a[1]);
-  respBody.innerHTML = respRows.map(([name, count]) => `
-    <tr><td>${escapeHtml(name)}</td><td class="num">${fmtNum(count)}</td></tr>
-  `).join("") || `<tr><td colspan="2" class="empty">Sin datos.</td></tr>`;
+  const respEntries = Array.from(byResp.entries()).sort((a, b) => b[1] - a[1]);
+  renderHorizontalBarChart(
+    `chart-kommo-resp-${s}`, `kommo-resp-${s}`,
+    respEntries.map(([k]) => k), respEntries.map(([, v]) => v)
+  );
 }
 
 // Panel dedicado de Bodas Holbox: funnel de 7 etapas + costo por etapa
