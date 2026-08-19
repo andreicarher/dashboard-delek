@@ -978,25 +978,12 @@ function buildPropertySections() {
         </div>
       </div>
 
-      <div class="charts-row-2">
-        <div class="panel">
-          <h2>Desempeño por idioma</h2>
-          <div class="table-scroll" style="max-height:220px;">
-            <table>
-              <thead>
-                <tr><th>Idioma</th><th class="num">Inversión</th><th class="num">Leads</th><th class="num">CPL</th></tr>
-              </thead>
-              <tbody id="lang-body-${s}"><tr><td colspan="4" class="empty">Cargando datos…</td></tr></tbody>
-            </table>
-          </div>
-        </div>
-        <div class="panel" id="pacing-panel-${s}">
-          <h2 id="pacing-title-${s}">Ritmo de gasto</h2>
-          <div id="pacing-content-${s}">
-            <p style="color:var(--muted); font-size:13px;">
-              Configura <code>monthlyBudgetMXN.${escapeHtml(prop)}</code> en <code>DASHBOARD_CONFIG</code> para activar este panel.
-            </p>
-          </div>
+      <div class="panel" id="pacing-panel-${s}" style="margin-bottom:28px;">
+        <h2 id="pacing-title-${s}">Ritmo de gasto</h2>
+        <div id="pacing-content-${s}">
+          <p style="color:var(--muted); font-size:13px;">
+            Configura <code>monthlyBudgetMXN.${escapeHtml(prop)}</code> en <code>DASHBOARD_CONFIG</code> para activar este panel.
+          </p>
         </div>
       </div>
 
@@ -1084,15 +1071,11 @@ function buildPropertySections() {
       </div>
       <div class="table-panel" style="margin-bottom:20px;">
         <h2>Pipeline comercial <span class="tag" style="margin-left:6px;">vía Kommo</span></h2>
-        <div class="charts-row-2" style="margin-bottom:0; padding: 4px 20px 20px;">
-          <div>
-            <p class="section-label">Leads por etapa</p>
-            <div class="chart-wrap" id="kommo-stage-wrap-${s}" style="height:260px;"><canvas id="chart-kommo-stage-${s}"></canvas></div>
-          </div>
-          <div>
-            <p class="section-label">Leads por responsable</p>
-            <div class="chart-wrap" id="kommo-resp-wrap-${s}" style="height:260px;"><canvas id="chart-kommo-resp-${s}"></canvas></div>
-          </div>
+        <div style="padding: 4px 20px 24px;">
+          <p class="section-label">Leads por etapa</p>
+          <div class="chart-wrap" id="kommo-stage-wrap-${s}" style="height:340px; margin-bottom:28px;"><canvas id="chart-kommo-stage-${s}"></canvas></div>
+          <p class="section-label">Leads por responsable</p>
+          <div class="chart-wrap" id="kommo-resp-wrap-${s}" style="height:340px;"><canvas id="chart-kommo-resp-${s}"></canvas></div>
         </div>
       </div>
     </section>`;
@@ -1521,7 +1504,6 @@ function renderAll() {
     renderLeadSplit(rows, s, prop);
     renderTrendChart(rows, s);
     renderFunnelChart(rows, s);
-    renderLanguageTable(rows, s);
     renderPacing(prop, s);
     renderTopAds(rows, s, prop);
     renderTable(rows, s, prop);
@@ -1584,15 +1566,30 @@ function renderHorizontalBarChart(canvasId, chartKey, labels, values, { mutedLab
       scales: {
         // suggestedMax deja aire a la derecha de la barra más larga para
         // que su etiqueta nunca choque contra el borde del gráfico.
-        x: { beginAtZero: true, suggestedMax: maxVal * 1.25, ticks: { color: "#8a8175" }, grid: { color: "rgba(29,42,46,0.06)" } },
-        y: { ticks: { color: "#3a3530", font: { family: "Inter", size: 12 } }, grid: { display: false } },
+        x: { beginAtZero: true, suggestedMax: maxVal * 1.25, ticks: { color: "#8a8175", font: { size: 12 } }, grid: { color: "rgba(29,42,46,0.06)" } },
+        y: { ticks: { color: "#3a3530", font: { family: "Inter", size: 13.5 } }, grid: { display: false } },
       },
     },
   });
 }
 
+// Filtra leads de Kommo por el rango de fechas activo en la barra de filtros
+// (usa la fecha de creación del lead). Si el periodo es "Todo el histórico"
+// (from y to en null) no filtra nada. Un lead sin fecha válida se excluye
+// cuando SÍ hay un rango activo, para no mezclar datos sin verificar.
+function filterLeadsByDateRange(leads) {
+  const { from, to } = state.filters;
+  if (!from && !to) return leads;
+  return leads.filter((l) => {
+    if (!l.createdAt) return false;
+    if (from && l.createdAt < from) return false;
+    if (to && l.createdAt > to) return false;
+    return true;
+  });
+}
+
 function renderKommoPipelinePanel(prop, s) {
-  const leads = state.kommoLeads.filter((l) => l.pipeline === prop.trim().toUpperCase());
+  const leads = filterLeadsByDateRange(state.kommoLeads.filter((l) => l.pipeline === prop.trim().toUpperCase()));
 
   const byStage = groupCount(leads, (l) => l.stage);
   const stageEntries = Array.from(byStage.entries()).sort((a, b) => b[1] - a[1]);
@@ -1615,7 +1612,7 @@ function renderKommoPipelinePanel(prop, s) {
 // por responsable con tasa de cierre.
 function renderBodasHolboxPanel() {
   const cfg = DASHBOARD_CONFIG;
-  const leads = state.kommoLeads.filter((l) => l.pipeline === "BODAS HOLBOX");
+  const leads = filterLeadsByDateRange(state.kommoLeads.filter((l) => l.pipeline === "BODAS HOLBOX"));
   const stageOrder = cfg.bodasHolboxStages;
   const wonStage = cfg.bodasHolboxWonStage;
   const lostStage = cfg.bodasHolboxLostStage;
@@ -1630,11 +1627,16 @@ function renderBodasHolboxPanel() {
   const total = leads.length;
   const winRate = (won + lost) > 0 ? (won / (won + lost)) * 100 : null;
 
-  // Inversión total en campañas de bodas: se usa TODO el histórico cargado
-  // (state.raw), no el rango de fechas filtrado arriba — esta pestaña es
-  // independiente de esos filtros porque compara contra el pipeline completo.
+  // La inversión también respeta el rango de fechas activo — si no, el CPL
+  // quedaría inconsistente (leads de un periodo corto vs. gasto histórico completo).
+  const { from: bodasFrom, to: bodasTo } = state.filters;
   const bodasSpend = sum(
-    state.raw.filter((r) => r.property === "Holbox" && normalizeText(r.campaign).includes(normalizeText(cfg.bodasCampaignMatch))),
+    state.raw.filter((r) => {
+      if (r.property !== "Holbox" || !normalizeText(r.campaign).includes(normalizeText(cfg.bodasCampaignMatch))) return false;
+      if (bodasFrom && r.date < bodasFrom) return false;
+      if (bodasTo && r.date > bodasTo) return false;
+      return true;
+    }),
     "spend"
   );
   const cpl = total > 0 ? bodasSpend / total : 0;
@@ -1826,20 +1828,6 @@ function renderLeadSplit(rows, s, prop) {
     if (el) el.textContent = text;
     renderKpiDelta(`kpi-delta-${key}-${s}`, curr, prev, dir);
   }
-}
-
-function renderLanguageTable(rows, s) {
-  const langs = groupByLanguage(rows);
-  const tbody = document.getElementById(`lang-body-${s}`);
-  if (!tbody) return;
-  tbody.innerHTML = langs.map((l) => `
-    <tr>
-      <td>${escapeHtml(l.language)}</td>
-      <td class="num">${fmtMoney2(l.spend)}</td>
-      <td class="num">${fmtNum(l.leads)}</td>
-      <td class="num">${l.leads > 0 ? fmtMoney2(l.cpl) : "—"}</td>
-    </tr>
-  `).join("") || `<tr><td colspan="4" class="empty">Sin datos para este filtro.</td></tr>`;
 }
 
 function renderPacing(prop, s) {
@@ -2122,15 +2110,15 @@ function renderTrendChart(rows, s) {
           type: "line",
           label: "CPL",
           data: grouped.map((g) => g.cpl),
-          borderColor: "#c4694e",
-          backgroundColor: "#c4694e",
-          borderDash: [4, 3],
+          borderColor: "#7d5ba6",
+          backgroundColor: "#7d5ba6",
+          borderWidth: 2.5,
           tension: 0.35,
           pointRadius: 3,
           yAxisID: "y2",
           order: 2,
           showLabels: true,
-          labelColor: "#c4694e",
+          labelColor: "#7d5ba6",
           labelOffset: 14,
           formatLabel: (v) => (v > 0 ? fmtMoney2(v) : ""),
         },
