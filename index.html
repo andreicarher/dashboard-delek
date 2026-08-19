@@ -1861,6 +1861,11 @@ function renderPacing(prop, s) {
   const pctBudgetSpent = (spendThisMonth / budget) * 100;
   const overPace = pctBudgetSpent - pctTimeElapsed > 5; // gastando 5+ pts más rápido de lo que avanza el mes
 
+  // Proyección de cierre de mes: promedio diario de gasto × días totales del mes.
+  const dailyAvgSpend = daysElapsed > 0 ? spendThisMonth / daysElapsed : 0;
+  const projectedSpend = dailyAvgSpend * daysInMonth;
+  const overBudgetProjection = projectedSpend > budget;
+
   if (title) title.textContent = `Ritmo de gasto — ${MONTH_NAME[now.getMonth()]} ${now.getFullYear()}`;
   content.innerHTML = `
     <div class="pacing-track">
@@ -1876,6 +1881,14 @@ function renderPacing(prop, s) {
         ? "Vas gastando más rápido de lo que avanza el mes — a este ritmo podrías agotar el presupuesto antes de fin de mes."
         : "Ritmo de gasto saludable respecto al presupuesto mensual."}
     </p>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
+      <span style="font-size:12.5px; color:var(--ink-soft);">Proyección de gasto a cierre de mes</span>
+      <span style="font-family:'IBM Plex Mono', monospace; font-weight:600; font-size:14px; color:${overBudgetProjection ? "var(--clay)" : "var(--ink)"};">${fmtMoney(projectedSpend)}</span>
+    </div>
+    ${overBudgetProjection ? `
+    <div style="margin-top:10px; padding:8px 12px; background:#fbeee9; border:1px solid #e5b8a6; border-radius:6px; color:#8a3c22; font-size:12px; font-weight:600; text-align:center;">
+      ⚠ GASTO MAYOR SOBRE LO APROBADO
+    </div>` : ""}
   `;
 }
 
@@ -2110,15 +2123,15 @@ function renderTrendChart(rows, s) {
           type: "line",
           label: "CPL",
           data: grouped.map((g) => g.cpl),
-          borderColor: "#7d5ba6",
-          backgroundColor: "#7d5ba6",
+          borderColor: "#d97757",
+          backgroundColor: "#d97757",
           borderWidth: 2.5,
           tension: 0.35,
           pointRadius: 3,
           yAxisID: "y2",
           order: 2,
           showLabels: true,
-          labelColor: "#7d5ba6",
+          labelColor: "#d97757",
           labelOffset: 14,
           formatLabel: (v) => (v > 0 ? fmtMoney2(v) : ""),
         },
