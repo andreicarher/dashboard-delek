@@ -277,6 +277,23 @@ tbody td { padding: 11px 20px; border-bottom: 1px solid var(--line); color: var(
 tbody tr:hover { background: var(--paper-2); }
 td.num, th.num { text-align: right; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; }
 .col-campaign { color: var(--ink); font-weight: 500; display: flex; align-items: center; gap: 8px; }
+.ad-thumb {
+  width: 52px; height: 52px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--paper-2);
+  display: block;
+}
+.ad-thumb-placeholder {
+  width: 52px; height: 52px;
+  border-radius: 6px;
+  border: 1px dashed var(--line);
+  background: var(--paper-2);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--muted);
+  font-size: 10px;
+}
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ocean-light); flex-shrink: 0; }
 .dot[data-property="Holbox"] { background: var(--clay); }
 .tag {
@@ -636,6 +653,8 @@ const state = {
   charts: {},
   geoData: {},   // s -> filas completas ya consultadas (cache para paginar sin refetch)
   geoPage: {},   // s -> índice de página actual (0-based)
+  adsFilters: { property: "all", linea: "all", campaign: "all", adset: "all" },
+  creativeThumbnails: {}, // adId -> URL del thumbnail
 };
 
 // ---------- 1. CARGA DE DATOS (gviz JSONP) ----------
@@ -901,6 +920,7 @@ function joinApiRowWithLookup(apiRow, lookupMap, source) {
     campaign: apiRow.campaign,
     adset: apiRow.adset,
     ad: apiRow.ad,
+    adId: apiRow.adId || "",
     campaignAdset: `${apiRow.campaign}-${apiRow.adset}`,
     funnel,
     objective,
@@ -994,8 +1014,9 @@ function getProperties() {
 // Todas las pestañas del dashboard: las plazas de Meta Ads + la pestaña
 // especial de Bodas Holbox (que no viene de Meta, sino del pipeline de Kommo).
 const BODAS_TAB_NAME = "Bodas Holbox";
+const ADS_TAB_NAME = "Performance de Anuncios";
 function getAllTabs() {
-  return [...getProperties(), BODAS_TAB_NAME];
+  return [...getProperties(), BODAS_TAB_NAME, ADS_TAB_NAME];
 }
 
 function slug(s) {
@@ -1161,7 +1182,7 @@ function buildPropertySections() {
         </div>
       </div>
     </section>`;
-  }).join("") + buildBodasHolboxSectionHtml();
+  }).join("") + buildBodasHolboxSectionHtml() + buildAdsPerformanceSectionHtml();
 }
 
 function buildBodasHolboxSectionHtml() {
@@ -1227,6 +1248,58 @@ function buildBodasHolboxSectionHtml() {
     </section>`;
 }
 
+function buildAdsPerformanceSectionHtml() {
+  return `
+    <section class="property-block" data-property="${escapeHtml(ADS_TAB_NAME)}">
+      <div class="filters" aria-label="Filtros de Performance de Anuncios" style="margin-bottom:20px;">
+        <div class="filter-group">
+          <label for="ads-filter-property">Propiedad</label>
+          <select id="ads-filter-property"><option value="all">Todas las propiedades</option></select>
+        </div>
+        <div class="filter-group">
+          <label for="ads-filter-linea">Línea de negocio</label>
+          <select id="ads-filter-linea"><option value="all">Todas las líneas</option></select>
+        </div>
+        <div class="filter-group">
+          <label for="ads-filter-campaign">Campaña</label>
+          <select id="ads-filter-campaign"><option value="all">Todas las campañas</option></select>
+        </div>
+        <div class="filter-group">
+          <label for="ads-filter-adset">AdSet</label>
+          <select id="ads-filter-adset"><option value="all">Todos los adsets</option></select>
+        </div>
+      </div>
+
+      <div class="table-panel">
+        <h2>Performance de anuncios</h2>
+        <p style="color:var(--ink-soft); font-size:12.5px; padding:0 20px; margin:-6px 0 10px;">
+          Respeta el periodo y los filtros de etapa/objetivo de arriba — combínalos con los filtros de esta pestaña para acotar por propiedad, línea de negocio, campaña o adset.
+        </p>
+        <div class="table-scroll" style="max-height:640px;">
+          <table>
+            <thead>
+              <tr>
+                <th>Creativo</th>
+                <th>Anuncio</th>
+                <th>Propiedad</th>
+                <th>Línea de negocio</th>
+                <th class="num">Inversión</th>
+                <th class="num">Impresiones</th>
+                <th class="num">Alcance</th>
+                <th class="num">CTR único</th>
+                <th class="num">Resultados</th>
+                <th class="num">Costo por resultado</th>
+              </tr>
+            </thead>
+            <tbody id="ads-performance-body">
+              <tr><td colspan="10" class="empty">Cargando datos…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>`;
+}
+
 function buildPropertyTabs() {
   const tabs = getAllTabs();
   const container = document.getElementById("property-tabs");
@@ -1279,8 +1352,13 @@ function populateFilterOptions() {
   buildPropertyTabs();
   showPropertyTab(getProperties()[0]);
   bindGeoPanelEvents();
+  bindAdsPerformanceEvents();
   fillSelect("filter-funnel", funnels, "Todas las etapas");
   fillSelect("filter-objective", objectives, "Todos los objetivos");
+
+  // Los creativos no dependen de filtros — se cargan una sola vez y se
+  // vuelven a pintar cuando ya estén listos (spend/leads no los necesitan).
+  loadCreativeThumbnails().then(() => renderAdsPerformanceTable());
 
   applyPeriodPreset(state.filters.period);
 }
@@ -1619,6 +1697,8 @@ function renderAll() {
     renderKommoPipelinePanel(prop, s);
   }
   renderBodasHolboxPanel();
+  populateAdsFilterOptions();
+  renderAdsPerformanceTable();
   document.getElementById("last-update").textContent =
     "Última actualización: " + new Date().toLocaleString("es-MX");
 }
@@ -2037,6 +2117,134 @@ function renderPacing(prop, s) {
 // función serverless, que a su vez llama a la API de Meta con el token
 // guardado como secreto en Vercel. Si el token todavía no está configurado,
 // mostramos un mensaje claro en vez de romper el dashboard.
+
+// ---------- Performance de Anuncios (creativos + filtros en cascada) ----------
+
+// Trae los thumbnails de creativos de ambas propiedades y los junta en un
+// solo mapa adId -> URL. Se llama una vez al cargar (los creativos cambian
+// poco, no hace falta refrescarlos en cada filtro).
+async function loadCreativeThumbnails() {
+  const results = await Promise.allSettled(
+    getProperties().map((prop) =>
+      fetch(`/api/meta-creatives?property=${encodeURIComponent(prop)}`).then((r) => r.json())
+    )
+  );
+  const merged = {};
+  for (const r of results) {
+    if (r.status === "fulfilled" && r.value?.thumbnails) Object.assign(merged, r.value.thumbnails);
+  }
+  state.creativeThumbnails = merged;
+}
+
+// Agrupa por anuncio individual (campaña+adset+ad+adId), conservando
+// propiedad y línea de negocio — es la unidad que muestra esta tabla.
+function groupByAd(rows) {
+  const map = new Map();
+  for (const r of rows) {
+    if (!r.ad) continue;
+    const key = `${r.property}|||${r.campaign}|||${r.adset}|||${r.ad}`;
+    if (!map.has(key)) {
+      map.set(key, { property: r.property, campaign: r.campaign, adset: r.adset, ad: r.ad, adId: r.adId, lineaNegocio: r.lineaNegocio, rows: [] });
+    }
+    map.get(key).rows.push(r);
+  }
+  return Array.from(map.values()).map((g) => ({ ...g, ...computeKpis(g.rows) }));
+}
+
+// Reconstruye las opciones de Campaña y AdSet en cascada: solo muestra
+// campañas disponibles dentro de la Propiedad/Línea ya elegidas, y solo
+// adsets dentro de la Campaña ya elegida.
+function populateAdsFilterOptions() {
+  const f = state.adsFilters;
+  const base = state.filtered.filter((r) => {
+    if (f.property !== "all" && r.property !== f.property) return false;
+    if (f.linea !== "all" && r.lineaNegocio !== f.linea) return false;
+    return true;
+  });
+
+  fillSelect("ads-filter-property", uniqueSorted(state.filtered.map((r) => r.property)), "Todas las propiedades");
+  fillSelect("ads-filter-linea", uniqueSorted(state.filtered.map((r) => r.lineaNegocio)), "Todas las líneas");
+  fillSelect("ads-filter-campaign", uniqueSorted(base.map((r) => r.campaign)), "Todas las campañas");
+
+  const campaignScoped = base.filter((r) => f.campaign === "all" || r.campaign === f.campaign);
+  fillSelect("ads-filter-adset", uniqueSorted(campaignScoped.map((r) => r.adset)), "Todos los adsets");
+
+  document.getElementById("ads-filter-property").value = f.property;
+  document.getElementById("ads-filter-linea").value = f.linea;
+  document.getElementById("ads-filter-campaign").value = f.campaign;
+  document.getElementById("ads-filter-adset").value = f.adset;
+}
+
+function renderAdsPerformanceTable() {
+  const f = state.adsFilters;
+  const rows = state.filtered.filter((r) => {
+    if (f.property !== "all" && r.property !== f.property) return false;
+    if (f.linea !== "all" && r.lineaNegocio !== f.linea) return false;
+    if (f.campaign !== "all" && r.campaign !== f.campaign) return false;
+    if (f.adset !== "all" && r.adset !== f.adset) return false;
+    return true;
+  });
+
+  const ads = groupByAd(rows).sort((a, b) => b.spend - a.spend);
+  const tbody = document.getElementById("ads-performance-body");
+  if (!tbody) return;
+
+  tbody.innerHTML = ads.map((a) => {
+    const thumb = state.creativeThumbnails[a.adId];
+    const thumbHtml = thumb
+      ? `<img class="ad-thumb" src="${thumb}" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('div'), {className:'ad-thumb-placeholder', textContent:'Sin imagen'}))">`
+      : `<div class="ad-thumb-placeholder">Sin imagen</div>`;
+    return `
+    <tr>
+      <td>${thumbHtml}</td>
+      <td class="col-campaign">
+        ${escapeHtml(a.ad)}<br>
+        <span class="tag">${escapeHtml(a.campaign)}</span> <span class="tag">${escapeHtml(a.adset)}</span>
+      </td>
+      <td><span class="property-dot" data-property="${escapeHtml(a.property)}"></span> ${escapeHtml(a.property)}</td>
+      <td>${escapeHtml(a.lineaNegocio)}</td>
+      <td class="num">${fmtMoney2(a.spend)}</td>
+      <td class="num">${fmtNum(a.impressions)}</td>
+      <td class="num">${fmtNum(a.reach)}</td>
+      <td class="num">${fmtPct(a.ctr)}</td>
+      <td class="num">${fmtNum(a.leads)}</td>
+      <td class="num">${a.leads > 0 ? fmtMoney2(a.cpl) : "—"}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="10" class="empty">Sin anuncios para esta combinación de filtros.</td></tr>`;
+}
+
+function bindAdsPerformanceEvents() {
+  const propertySelect = document.getElementById("ads-filter-property");
+  const lineaSelect = document.getElementById("ads-filter-linea");
+  const campaignSelect = document.getElementById("ads-filter-campaign");
+  const adsetSelect = document.getElementById("ads-filter-adset");
+  if (!propertySelect) return; // la pestaña aún no se construyó
+
+  propertySelect.addEventListener("change", (e) => {
+    state.adsFilters.property = e.target.value;
+    state.adsFilters.campaign = "all"; // la campaña ya no aplica al cambiar de propiedad
+    state.adsFilters.adset = "all";
+    populateAdsFilterOptions();
+    renderAdsPerformanceTable();
+  });
+  lineaSelect.addEventListener("change", (e) => {
+    state.adsFilters.linea = e.target.value;
+    state.adsFilters.campaign = "all";
+    state.adsFilters.adset = "all";
+    populateAdsFilterOptions();
+    renderAdsPerformanceTable();
+  });
+  campaignSelect.addEventListener("change", (e) => {
+    state.adsFilters.campaign = e.target.value;
+    state.adsFilters.adset = "all"; // el adset ya no aplica al cambiar de campaña
+    populateAdsFilterOptions();
+    renderAdsPerformanceTable();
+  });
+  adsetSelect.addEventListener("change", (e) => {
+    state.adsFilters.adset = e.target.value;
+    renderAdsPerformanceTable();
+  });
+}
 
 function bindGeoPanelEvents() {
   for (const prop of getProperties()) {
