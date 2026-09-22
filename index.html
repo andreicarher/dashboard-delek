@@ -1257,6 +1257,7 @@ function applyPeriodPreset(preset) {
     state.filters.to = to;
     document.getElementById("filter-from").value = toInputDate(from);
     document.getElementById("filter-to").value = toInputDate(to);
+    autoAdjustGranularity();
     applyFilters();
     return;
   }
@@ -1266,7 +1267,31 @@ function applyPeriodPreset(preset) {
   state.filters.to = range.to;
   if (range.from) document.getElementById("filter-from").value = toInputDate(range.from);
   if (range.to) document.getElementById("filter-to").value = toInputDate(range.to);
+  autoAdjustGranularity();
   applyFilters();
+}
+
+// Si el rango de análisis activo supera los 10 días, cambia automáticamente
+// la granularidad a "Semanal" — ver un rango largo día por día amontona las
+// etiquetas de datos en todos los gráficos de tendencia. Aplica a todas las
+// plazas porque la granularidad es un filtro global, no por propiedad.
+function autoAdjustGranularity() {
+  let { from, to } = state.filters;
+  if (!from || !to) {
+    // "Todo el histórico": usamos el rango real de los datos ya cargados.
+    const dates = state.raw.map((r) => r.date);
+    if (!dates.length) return;
+    from = new Date(Math.min(...dates));
+    to = new Date(Math.max(...dates));
+  }
+  const daySpan = (to - from) / 86400000;
+  const suggested = daySpan > 10 ? "week" : "day";
+  if (suggested === state.filters.granularity) return;
+
+  state.filters.granularity = suggested;
+  document.querySelectorAll(".granularity-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.granularity === suggested);
+  });
 }
 
 function uniqueSorted(arr) {
@@ -2294,10 +2319,14 @@ function bindEvents() {
     applyPeriodPreset(e.target.value);
   });
   document.getElementById("filter-from").addEventListener("change", (e) => {
-    state.filters.from = e.target.value ? new Date(e.target.value) : null; applyFilters();
+    state.filters.from = e.target.value ? new Date(e.target.value) : null;
+    autoAdjustGranularity();
+    applyFilters();
   });
   document.getElementById("filter-to").addEventListener("change", (e) => {
-    state.filters.to = e.target.value ? new Date(e.target.value + "T23:59:59") : null; applyFilters();
+    state.filters.to = e.target.value ? new Date(e.target.value + "T23:59:59") : null;
+    autoAdjustGranularity();
+    applyFilters();
   });
   document.querySelectorAll(".granularity-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
