@@ -1018,6 +1018,29 @@ function buildPropertySections() {
         <div class="kpi-card"><div class="gauge"></div><p class="kpi-label">CTR</p><p class="kpi-value" id="kpi-ctr-${s}">—</p><span class="kpi-delta neutral" id="kpi-delta-ctr-${s}"></span></div>
         <div class="kpi-card"><div class="gauge"></div><p class="kpi-label">CPM</p><p class="kpi-value" id="kpi-cpm-${s}">—</p><span class="kpi-delta neutral" id="kpi-delta-cpm-${s}"></span></div>
       </div>
+
+      <div class="table-panel" style="margin-bottom:20px;">
+        <h2>Desempeño por línea de negocio</h2>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Línea de negocio</th>
+                <th class="num">Inversión</th>
+                <th class="num">Alcance</th>
+                <th class="num">Impresiones</th>
+                <th class="num">CTR único</th>
+                <th class="num">Resultados</th>
+                <th class="num">Costo por resultado</th>
+              </tr>
+            </thead>
+            <tbody id="linea-negocio-body-${s}">
+              <tr><td colspan="7" class="empty">Cargando datos…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <p class="section-label" style="margin-top:4px;">Desglose por tipo de lead</p>
       <div class="kpi-grid-secondary" aria-label="Desglose de leads por tipo — ${escapeHtml(prop)}">
         <div class="kpi-card"><p class="kpi-label">Leads (Formulario)</p><p class="kpi-value" id="kpi-formleads-${s}">—</p><span class="kpi-delta neutral" id="kpi-delta-formleads-${s}"></span></div>
@@ -1387,11 +1410,12 @@ function computeKpis(rows) {
   const spend = sum(rows, "spend");
   const leads = sum(rows, "leads");
   const impressions = sum(rows, "impressions");
+  const reach = sum(rows, "reach");
   const clicks = sum(rows, "linkClicks");
   const cpl = leads > 0 ? spend / leads : 0;
   const cpm = impressions > 0 ? (spend / impressions) * 1000 : 0;
   const ctr = impressions > 0 ? (clicks / impressions) * 100 : 0;
-  return { spend, leads, impressions, clicks, cpl, cpm, ctr };
+  return { spend, leads, impressions, reach, clicks, cpl, cpm, ctr };
 }
 
 // Desglosa el blend de "leads" en sus dos fuentes reales: formulario (LEADFORM)
@@ -1585,6 +1609,7 @@ function renderAll() {
     const s = slug(prop);
     const rows = state.filtered.filter((r) => r.property === prop);
     renderKpis(rows, s, prop);
+    renderLineaNegocioTable(rows, s);
     renderLeadSplit(rows, s, prop);
     renderTrendChart(rows, s);
     renderFunnelChart(rows, s);
@@ -1896,6 +1921,37 @@ function renderKpis(rows, s, prop) {
     if (el) el.textContent = KPI_META[key].fmt(val);
     renderKpiDelta(`kpi-delta-${key}-${s}`, val, prevK[key], KPI_META[key].goodDirection);
   }
+}
+
+// Solo muestra líneas de negocio con actividad real en el periodo filtrado
+// (spend o impresiones > 0) — si "Eventos" no corrió nada, no aparece.
+function renderLineaNegocioTable(rows, s) {
+  const groups = new Map();
+  for (const r of rows) {
+    const key = r.lineaNegocio || "Sin clasificar";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  }
+
+  const tbody = document.getElementById(`linea-negocio-body-${s}`);
+  if (!tbody) return;
+
+  const active = Array.from(groups.entries())
+    .map(([linea, groupRows]) => ({ linea, ...computeKpis(groupRows) }))
+    .filter((g) => g.spend > 0 || g.impressions > 0)
+    .sort((a, b) => b.spend - a.spend);
+
+  tbody.innerHTML = active.map((g) => `
+    <tr>
+      <td class="col-campaign">${escapeHtml(g.linea)}</td>
+      <td class="num">${fmtMoney2(g.spend)}</td>
+      <td class="num">${fmtNum(g.reach)}</td>
+      <td class="num">${fmtNum(g.impressions)}</td>
+      <td class="num">${fmtPct(g.ctr)}</td>
+      <td class="num">${fmtNum(g.leads)}</td>
+      <td class="num">${g.leads > 0 ? fmtMoney2(g.cpl) : "—"}</td>
+    </tr>
+  `).join("") || `<tr><td colspan="7" class="empty">Sin actividad en este periodo.</td></tr>`;
 }
 
 function renderLeadSplit(rows, s, prop) {
