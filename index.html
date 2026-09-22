@@ -828,14 +828,33 @@ function normalizeKommoLeads(resp) {
 // Meta — es el catálogo de clasificación de negocio, no las métricas en sí.
 function normalizeCampaignLookup(resp) {
   const cols = resp.table.cols;
-  const rows = resp.table.rows || [];
-  const idx = {
-    campaignAdset: colIndexByLabel(cols, ["CAMPAÑA + ADSET", "Campaña + Adset"]),
-    funnel: colIndexByLabel(cols, ["ETAPA FUNNEL"]),
-    objective: colIndexByLabel(cols, ["OBJETIVO"]),
-    plaza: colIndexByLabel(cols, ["PLAZA"]),
-    lineaNegocio: colIndexByLabel(cols, ["LÍNEA DE NEGOCIO", "LINEA DE NEGOCIO"]),
-  };
+  let rows = resp.table.rows || [];
+
+  // Esta pestaña tiene una columna A vacía, lo cual confunde a gviz: en vez
+  // de reportar los encabezados en cols[].label, los deja como si fueran la
+  // primera fila de datos (todas las labels llegan como ""). Si detectamos
+  // ese caso, reconstruimos los encabezados desde esa primera fila.
+  let idx;
+  const labelsEmpty = cols.every((c) => !c.label);
+  if (labelsEmpty && rows.length) {
+    const headerCols = (rows[0].c || []).map((c) => ({ label: toText(c) }));
+    idx = {
+      campaignAdset: colIndexByLabel(headerCols, ["CAMPAÑA + ADSET", "Campaña + Adset"]),
+      funnel: colIndexByLabel(headerCols, ["ETAPA FUNNEL"]),
+      objective: colIndexByLabel(headerCols, ["OBJETIVO"]),
+      plaza: colIndexByLabel(headerCols, ["PLAZA"]),
+      lineaNegocio: colIndexByLabel(headerCols, ["LÍNEA DE NEGOCIO", "LINEA DE NEGOCIO"]),
+    };
+    rows = rows.slice(1); // esa primera fila ya no es un dato, era el encabezado
+  } else {
+    idx = {
+      campaignAdset: colIndexByLabel(cols, ["CAMPAÑA + ADSET", "Campaña + Adset"]),
+      funnel: colIndexByLabel(cols, ["ETAPA FUNNEL"]),
+      objective: colIndexByLabel(cols, ["OBJETIVO"]),
+      plaza: colIndexByLabel(cols, ["PLAZA"]),
+      lineaNegocio: colIndexByLabel(cols, ["LÍNEA DE NEGOCIO", "LINEA DE NEGOCIO"]),
+    };
+  }
 
   const map = new Map();
   for (const row of rows) {
