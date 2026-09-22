@@ -278,22 +278,35 @@ tbody tr:hover { background: var(--paper-2); }
 td.num, th.num { text-align: right; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; }
 .col-campaign { color: var(--ink); font-weight: 500; display: flex; align-items: center; gap: 8px; }
 .ad-thumb {
-  width: 52px; height: 52px;
+  width: 110px; height: 110px;
   object-fit: cover;
-  border-radius: 6px;
+  border-radius: 8px;
   border: 1px solid var(--line);
   background: var(--paper-2);
   display: block;
 }
 .ad-thumb-placeholder {
-  width: 52px; height: 52px;
-  border-radius: 6px;
+  width: 110px; height: 110px;
+  border-radius: 8px;
   border: 1px dashed var(--line);
   background: var(--paper-2);
   display: flex; align-items: center; justify-content: center;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
+  text-align: center;
+  padding: 8px;
 }
+/* Columna fija: al hacer scroll horizontal en la tabla de Performance de
+   Anuncios, el creativo se queda visible mientras se recorren las métricas. */
+.col-sticky {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--paper);
+  box-shadow: 2px 0 4px -2px rgba(29,42,46,0.12);
+}
+thead .col-sticky { z-index: 3; background: var(--paper); }
+tbody tr:hover .col-sticky { background: var(--paper-2); }}
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ocean-light); flex-shrink: 0; }
 .dot[data-property="Holbox"] { background: var(--clay); }
 .tag {
@@ -1272,17 +1285,16 @@ function buildAdsPerformanceSectionHtml() {
 
       <div class="table-panel">
         <h2>Performance de anuncios</h2>
-        <p style="color:var(--ink-soft); font-size:12.5px; padding:0 20px; margin:-6px 0 10px;">
+        <p style="color:var(--ink-soft); font-size:12.5px; padding:0 20px; margin:-6px 0 6px;">
           Respeta el periodo y los filtros de etapa/objetivo de arriba — combínalos con los filtros de esta pestaña para acotar por propiedad, línea de negocio, campaña o adset.
         </p>
+        <p id="ads-context-note" style="color:var(--ink-soft); font-size:12.5px; padding:0 20px; margin:0 0 10px; font-weight:600;"></p>
         <div class="table-scroll" style="max-height:640px;">
           <table>
             <thead>
               <tr>
-                <th>Creativo</th>
+                <th class="col-sticky">Creativo</th>
                 <th>Anuncio</th>
-                <th>Propiedad</th>
-                <th>Línea de negocio</th>
                 <th class="num">Inversión</th>
                 <th class="num">Impresiones</th>
                 <th class="num">Alcance</th>
@@ -1292,8 +1304,9 @@ function buildAdsPerformanceSectionHtml() {
               </tr>
             </thead>
             <tbody id="ads-performance-body">
-              <tr><td colspan="10" class="empty">Cargando datos…</td></tr>
+              <tr><td colspan="8" class="empty">Cargando datos…</td></tr>
             </tbody>
+
           </table>
         </div>
       </div>
@@ -2189,6 +2202,15 @@ function renderAdsPerformanceTable() {
   const tbody = document.getElementById("ads-performance-body");
   if (!tbody) return;
 
+  // Nota de contexto: como Propiedad y Línea de negocio ya no son columnas
+  // de la tabla, se resumen aquí con base en lo que esté elegido arriba.
+  const noteEl = document.getElementById("ads-context-note");
+  if (noteEl) {
+    const propLabel = f.property === "all" ? "Todas las propiedades" : f.property;
+    const lineaLabel = f.linea === "all" ? "todas las líneas de negocio" : f.linea;
+    noteEl.textContent = `Mostrando: ${propLabel} · ${lineaLabel}`;
+  }
+
   tbody.innerHTML = ads.map((a) => {
     const thumb = state.creativeThumbnails[a.adId];
     const thumbHtml = thumb
@@ -2196,13 +2218,11 @@ function renderAdsPerformanceTable() {
       : `<div class="ad-thumb-placeholder">Sin imagen</div>`;
     return `
     <tr>
-      <td>${thumbHtml}</td>
+      <td class="col-sticky">${thumbHtml}</td>
       <td class="col-campaign">
         ${escapeHtml(a.ad)}<br>
         <span class="tag">${escapeHtml(a.campaign)}</span> <span class="tag">${escapeHtml(a.adset)}</span>
       </td>
-      <td><span class="property-dot" data-property="${escapeHtml(a.property)}"></span> ${escapeHtml(a.property)}</td>
-      <td>${escapeHtml(a.lineaNegocio)}</td>
       <td class="num">${fmtMoney2(a.spend)}</td>
       <td class="num">${fmtNum(a.impressions)}</td>
       <td class="num">${fmtNum(a.reach)}</td>
@@ -2210,7 +2230,7 @@ function renderAdsPerformanceTable() {
       <td class="num">${fmtNum(a.leads)}</td>
       <td class="num">${a.leads > 0 ? fmtMoney2(a.cpl) : "—"}</td>
     </tr>`;
-  }).join("") || `<tr><td colspan="10" class="empty">Sin anuncios para esta combinación de filtros.</td></tr>`;
+  }).join("") || `<tr><td colspan="8" class="empty">Sin anuncios para esta combinación de filtros.</td></tr>`;
 }
 
 function bindAdsPerformanceEvents() {
