@@ -68,7 +68,7 @@ async function fetchAdPerformance(accountId, days) {
     until: until.toISOString().slice(0, 10),
   });
 
-  const fields = ["campaign_name", "adset_name", "ad_name", "spend", "impressions", "reach", "frequency", "unique_inline_link_clicks", "actions"].join(",");
+  const fields = ["ad_id", "campaign_name", "adset_name", "ad_name", "spend", "impressions", "reach", "frequency", "unique_inline_link_clicks", "actions"].join(",");
   const url =
     `https://graph.facebook.com/${GRAPH_API_VERSION}/act_${accountId}/insights` +
     `?fields=${fields}&level=ad&time_increment=1&time_range=${encodeURIComponent(timeRange)}` +
@@ -82,6 +82,7 @@ async function fetchAdPerformance(accountId, days) {
       date: row.date_start, // "YYYY-MM-DD"
       campaign: row.campaign_name || "",
       adset: row.adset_name || "",
+      adId: row.ad_id || "",
       ad: row.ad_name || "",
       spend: Number(row.spend) || 0,
       impressions: Number(row.impressions) || 0,
