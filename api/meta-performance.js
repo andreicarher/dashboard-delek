@@ -68,7 +68,7 @@ async function fetchAdPerformance(accountId, days) {
     until: until.toISOString().slice(0, 10),
   });
 
-  const fields = ["campaign_name", "adset_name", "ad_name", "spend", "impressions", "reach", "frequency", "inline_link_clicks", "actions"].join(",");
+  const fields = ["campaign_name", "adset_name", "ad_name", "spend", "impressions", "reach", "frequency", "unique_inline_link_clicks", "actions"].join(",");
   const url =
     `https://graph.facebook.com/${GRAPH_API_VERSION}/act_${accountId}/insights` +
     `?fields=${fields}&level=ad&time_increment=1&time_range=${encodeURIComponent(timeRange)}` +
@@ -87,7 +87,7 @@ async function fetchAdPerformance(accountId, days) {
       impressions: Number(row.impressions) || 0,
       reach: Number(row.reach) || 0,
       frequency: Number(row.frequency) || 0,
-      linkClicks: Number(row.inline_link_clicks) || 0,
+      linkClicks: Number(row.unique_inline_link_clicks) || 0, // clics ÚNICOS, no totales — así el CTR no infla por clics repetidos de la misma persona
       facebookLeads: extractAction(actions, "onsite_conversion.lead_grouped"),
       messagingConvos: extractAction(actions, "onsite_conversion.messaging_first_reply"),
     };
