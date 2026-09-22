@@ -293,6 +293,7 @@ td.num, th.num { text-align: right; font-family: 'IBM Plex Mono', monospace; fon
 .tag-leadform { background: #dcebee; color: #1f4b54; border-color: transparent; }
 .tag-awareness { background: #f7e6bf; color: #8a5a1f; border-color: transparent; }
 .tag-conversion { background: var(--sand); color: #57544d; border-color: transparent; }
+.tag-unclassified { background: #ffe0c2; color: #a34c00; border-color: transparent; font-weight: 700; }
 .empty { text-align: center; color: var(--muted); padding: 30px !important; }
 .table-scroll { max-height: 420px; overflow: auto; }
 .pagination-bar {
@@ -472,11 +473,12 @@ footer {
   <section class="panel" aria-label="Notas" style="margin-bottom:28px;">
     <h2>Notas</h2>
     <p style="color:var(--ink-soft); font-size: 13.5px; line-height:1.6; margin:0;">
-      Este dashboard lee directamente del Google Sheet alimentado por Data Slayer.
-      Actualiza la query en Data Slayer y refresca esta página (o espera el
-      auto-refresh) para ver los datos más recientes — no hay pasos intermedios.
+      Las métricas de campañas (inversión, leads, impresiones, etc.) vienen en vivo directo de la API de Meta Ads —
+      no dependen de que refresques ninguna query. La clasificación de negocio (Etapa Funnel, Objetivo, Plaza,
+      Línea de Negocio) sí viene de Google Sheets, de la pestaña "Concatenado campañas": actualízala ahí conforme
+      subas campañas nuevas, o aparecerán marcadas como <span class="tag tag-unclassified">⚠ Sin clasificar</span>.
       <br><br>
-      Próximamente: cruce con leads de Kommo por campaña, y canales de Google Ads y TikTok Ads.
+      Próximamente: canales de Google Ads y TikTok Ads.
     </p>
   </section>
 </main>
@@ -521,32 +523,35 @@ footer {
  */
 
 const DASHBOARD_CONFIG = {
-  // ID del Google Sheet (se saca de la URL: /d/ESTE_ID/edit)
+  // ID del Google Sheet donde vive el catálogo de clasificación y los leads
+  // de Kommo (las métricas de Meta Ads ya NO se leen de aquí — vienen de la
+  // API directa, ver metaApi más abajo).
   spreadsheetId: "13GQnl_hIY2OLXHUKelbLSe-ii4NZ6JJN2SHmjY8xmBk",
 
-  // Cada fuente = una pestaña del Sheet que se comporta como una tabla de Meta/Google/TikTok Ads.
-  // Todas deben compartir el mismo esquema de columnas (ver README).
+  // Cada fuente = una plaza con su propia cuenta de anuncios de Meta. El
+  // mapeo real de propiedad -> Ad Account ID vive en api/meta-performance.js
+  // (del lado del servidor, junto al token). Cuando agregues Google Ads o
+  // TikTok Ads, esto tendría que crecer a también declarar por qué endpoint
+  // se consulta cada canal.
   sources: [
-    {
-      id: "meta_tulum",
-      sheetName: "QueryMeta_2026_Tulum",
-      channel: "Meta Ads",
-      property: "Tulum",
-    },
-    {
-      id: "meta_holbox",
-      sheetName: "QueryMeta_2026_Holbox",
-      channel: "Meta Ads",
-      property: "Holbox",
-    },
-    // Cuando agregues Google Ads o TikTok Ads, solo añade un objeto aquí:
-    // {
-    //   id: "google_tulum",
-    //   sheetName: "QueryGoogle_2026_Tulum",
-    //   channel: "Google Ads",
-    //   property: "Tulum",
-    // },
+    { id: "meta_tulum", channel: "Meta Ads", property: "Tulum" },
+    { id: "meta_holbox", channel: "Meta Ads", property: "Holbox" },
   ],
+
+  // Cuántos días hacia atrás se le piden a la API de Meta en cada carga.
+  // El filtro de periodo del dashboard (7/14/30 días, mes actual, etc.)
+  // se aplica DESPUÉS, en el navegador, sobre este mismo lote ya cargado —
+  // así cambiar de periodo no dispara una llamada nueva a Meta cada vez.
+  metaApiLookbackDays: 90,
+
+  // Catálogo de clasificación de campañas: por cada "Campaña-AdSet" que
+  // devuelva la API de Meta, aquí se busca su Etapa Funnel, Objetivo, Plaza
+  // y Línea de Negocio. Actualízalo en Sheets conforme suban campañas nuevas
+  // — una campaña que no aparezca aquí cae en "Sin clasificar".
+  campaignLookup: {
+    spreadsheetId: "13GQnl_hIY2OLXHUKelbLSe-ii4NZ6JJN2SHmjY8xmBk",
+    sheetName: "Concatenado campañas",
+  },
 
   // Cada cuántos minutos se refresca automáticamente el dashboard en pantalla
   autoRefreshMinutes: 15,
@@ -686,6 +691,26 @@ async function fetchSheetTabWithRetry(spreadsheetId, sheetName, attempts = 3) {
   throw lastError;
 }
 
+// Trae el desempeño de una plaza directo de nuestra función serverless
+// (/api/meta-performance), que a su vez consulta la API de Meta Ads.
+// Mismo patrón de reintentos que fetchSheetTabWithRetry, para absorber
+// fallas momentáneas de red o de la propia API de Meta.
+async function fetchMetaPerformance(property, days, attempts = 3) {
+  let lastError;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const resp = await fetch(`/api/meta-performance?property=${encodeURIComponent(property)}&days=${days}`);
+      const json = await resp.json();
+      if (!resp.ok) throw new Error(json.error || `/api/meta-performance respondió ${resp.status}`);
+      return json.rows || [];
+    } catch (err) {
+      lastError = err;
+      if (i < attempts - 1) await sleep(1200 * (i + 1));
+    }
+  }
+  throw lastError;
+}
+
 // ---------- 2. NORMALIZACIÓN ----------
 
 function cellValue(row, idx) {
@@ -797,110 +822,125 @@ function normalizeKommoLeads(resp) {
   return out;
 }
 
-function normalizeSource(resp, source) {
+// Normaliza la pestaña "Concatenado campañas": construye un mapa
+// "CAMPAÑA-ADSET" (normalizado) -> {funnel, objective, plaza, lineaNegocio}.
+// Este es el ÚNICO lugar que sigue viniendo de Sheets para las métricas de
+// Meta — es el catálogo de clasificación de negocio, no las métricas en sí.
+function normalizeCampaignLookup(resp) {
   const cols = resp.table.cols;
   const rows = resp.table.rows || [];
-
   const idx = {
-    month: colIndexByLabel(cols, ["Month"]),
-    week: colIndexByLabel(cols, ["Week (Starting on Monday)", "Week"]),
-    date: colIndexByLabel(cols, ["Date"]),
-    campaign: colIndexByLabel(cols, ["Campaign name"]),
-    adset: colIndexByLabel(cols, ["AdSet name"]),
-    ad: colIndexByLabel(cols, ["Ad name"]),
-    spend: colIndexByLabel(cols, ["Total Cost"]),
-    reach: colIndexByLabel(cols, ["Reach"]),
-    impressions: colIndexByLabel(cols, ["Impressions"]),
-    frequency: colIndexByLabel(cols, ["Frequency"]),
-    igVisits: colIndexByLabel(cols, ["Instagram Profile Visits"]),
-    cpm: colIndexByLabel(cols, ["CPM"]),
-    linkClicks: colIndexByLabel(cols, ["Unique inline link clicks"]),
-    ctr: colIndexByLabel(cols, ["Unique Links CTR"]),
-    lpViews: colIndexByLabel(cols, ["Landing page views"]),
-    webRegs: colIndexByLabel(cols, ["Website registrations completed"]),
-    leads: colIndexByLabel(cols, ["On Facebook Leads"]),
-    cpl: colIndexByLabel(cols, ["Cost per On Facebook Leads"]),
-    msgConvos: colIndexByLabel(cols, ["New messaging conversations"]),
     campaignAdset: colIndexByLabel(cols, ["CAMPAÑA + ADSET", "Campaña + Adset"]),
     funnel: colIndexByLabel(cols, ["ETAPA FUNNEL"]),
     objective: colIndexByLabel(cols, ["OBJETIVO"]),
     plaza: colIndexByLabel(cols, ["PLAZA"]),
+    lineaNegocio: colIndexByLabel(cols, ["LÍNEA DE NEGOCIO", "LINEA DE NEGOCIO"]),
   };
 
-  const out = [];
+  const map = new Map();
   for (const row of rows) {
     if (!row || !row.c) continue;
-    const campaign = toText(cellValue(row, idx.campaign));
-    if (!campaign) continue; // filas vacías / de configuración al final de la hoja
-
-    const monthNum = toNumber(cellValue(row, idx.month)) || null;
-    const date = parseSheetDate(cellValue(row, idx.date), monthNum);
-    const spend = toNumber(cellValue(row, idx.spend));
-    const objectiveRaw = toText(cellValue(row, idx.objective)) || "Sin objetivo";
-    const facebookLeads = toNumber(cellValue(row, idx.leads));
-    const messagingConvos = toNumber(cellValue(row, idx.msgConvos));
-
-    // El "lead" real depende del objetivo de la campaña:
-    // - LEADFORM  -> el lead es un registro de formulario ("On Facebook Leads")
-    // - MENSAJES  -> el lead es una conversación de WhatsApp iniciada ("New messaging conversations")
-    // Si aparece un objetivo distinto a estos dos, usamos On Facebook Leads como
-    // valor por defecto (mismo comportamiento que antes de este ajuste).
-    const objectiveKey = objectiveRaw.trim().toUpperCase();
-    const leads = objectiveKey === "MENSAJES" ? messagingConvos : facebookLeads;
-
-    out.push({
-      source: source.id,
-      channel: source.channel,
-      // Priorizamos la propiedad definida en config.sources (consistente con las
-      // secciones que arma buildPropertySections). La columna PLAZA del Sheet
-      // puede venir en mayúsculas ("TULUM") y no debe romper el match.
-      property: source.property || toText(cellValue(row, idx.plaza)),
-      date,
-      month: monthNum,
-      week: toNumber(cellValue(row, idx.week)) || null,
-      campaign,
-      adset: toText(cellValue(row, idx.adset)),
-      ad: toText(cellValue(row, idx.ad)),
-      campaignAdset: toText(cellValue(row, idx.campaignAdset)) || campaign,
+    const key = toText(cellValue(row, idx.campaignAdset));
+    if (!key) continue;
+    map.set(normalizeText(key), {
       funnel: toText(cellValue(row, idx.funnel)) || "Sin etapa",
-      objective: objectiveRaw,
-      spend,
-      reach: toNumber(cellValue(row, idx.reach)),
-      impressions: toNumber(cellValue(row, idx.impressions)),
-      frequency: toNumber(cellValue(row, idx.frequency)),
-      igVisits: toNumber(cellValue(row, idx.igVisits)),
-      cpm: toNumber(cellValue(row, idx.cpm)),
-      linkClicks: toNumber(cellValue(row, idx.linkClicks)),
-      ctr: toNumber(cellValue(row, idx.ctr)),
-      lpViews: toNumber(cellValue(row, idx.lpViews)),
-      webRegs: toNumber(cellValue(row, idx.webRegs)),
-      leads,
-      facebookLeads,
-      messagingConvos,
+      objective: toText(cellValue(row, idx.objective)) || "Sin objetivo",
+      plaza: toText(cellValue(row, idx.plaza)),
+      lineaNegocio: toText(cellValue(row, idx.lineaNegocio)) || "Sin clasificar",
     });
   }
-  return out;
+  return map;
+}
+
+// Cruza una fila cruda de /api/meta-performance con el catálogo de
+// clasificación. Si la combinación Campaña+AdSet no está en el catálogo
+// (campaña nueva que aún no se agrega a Sheets), cae en "Sin clasificar" —
+// visible, no oculta, para que sea obvio que falta clasificarla.
+function joinApiRowWithLookup(apiRow, lookupMap, source) {
+  const lookupKey = normalizeText(`${apiRow.campaign}-${apiRow.adset}`);
+  const match = lookupMap.get(lookupKey);
+
+  const funnel = match?.funnel || "Sin clasificar";
+  const objective = match?.objective || "Sin clasificar";
+  const lineaNegocio = match?.lineaNegocio || "Sin clasificar";
+
+  // El "lead" real depende del objetivo de la campaña:
+  // - LEADFORM  -> el lead es un registro de formulario ("On Facebook Leads")
+  // - MENSAJES  -> el lead es una conversación de WhatsApp iniciada ("New messaging conversations")
+  const objectiveKey = objective.trim().toUpperCase();
+  const leads = objectiveKey === "MENSAJES" ? apiRow.messagingConvos : apiRow.facebookLeads;
+
+  const date = apiRow.date ? new Date(apiRow.date + "T00:00:00") : null;
+
+  return {
+    source: source.id,
+    channel: source.channel,
+    property: source.property, // viene de la cuenta de anuncios consultada, no del catálogo — inequívoco
+    date,
+    month: date ? date.getMonth() + 1 : null,
+    week: date ? isoWeekNumber(date) : null,
+    campaign: apiRow.campaign,
+    adset: apiRow.adset,
+    ad: apiRow.ad,
+    campaignAdset: `${apiRow.campaign}-${apiRow.adset}`,
+    funnel,
+    objective,
+    lineaNegocio,
+    unclassified: !match,
+    spend: apiRow.spend,
+    reach: apiRow.reach,
+    impressions: apiRow.impressions,
+    frequency: apiRow.frequency,
+    linkClicks: apiRow.linkClicks,
+    leads,
+    facebookLeads: apiRow.facebookLeads,
+    messagingConvos: apiRow.messagingConvos,
+  };
 }
 
 // ---------- 3. CARGA GENERAL ----------
 
 async function loadAllData() {
   const cfg = DASHBOARD_CONFIG;
-  const [metaResults, kommoResult] = await Promise.all([
+  const [lookupResult, metaResults, kommoResult] = await Promise.all([
+    fetchSheetTabWithRetry(cfg.campaignLookup.spreadsheetId, cfg.campaignLookup.sheetName)
+      .then((r) => ({ status: "fulfilled", value: normalizeCampaignLookup(r) }))
+      .catch((err) => ({ status: "rejected", reason: err })),
     Promise.allSettled(
-      cfg.sources.map((s) => fetchSheetTabWithRetry(cfg.spreadsheetId, s.sheetName).then((r) => normalizeSource(r, s)))
+      cfg.sources.map((s) => fetchMetaPerformance(s.property, cfg.metaApiLookbackDays))
     ),
     fetchSheetTabWithRetry(cfg.kommoLeads.spreadsheetId, cfg.kommoLeads.sheetName)
       .then((r) => ({ status: "fulfilled", value: normalizeKommoLeads(r) }))
       .catch((err) => ({ status: "rejected", reason: err })),
   ]);
 
-  let combined = [];
   const errors = [];
+
+  // Si el catálogo de clasificación no cargó, seguimos con un mapa vacío:
+  // todo cae en "Sin clasificar" en vez de tumbar el dashboard completo.
+  let lookupMap = new Map();
+  if (lookupResult.status === "fulfilled") {
+    lookupMap = lookupResult.value;
+  } else {
+    errors.push(`${cfg.campaignLookup.sheetName}: ${lookupResult.reason.message}`);
+  }
+
+  let combined = [];
+  let unclassifiedSpend = 0;
   metaResults.forEach((r, i) => {
-    if (r.status === "fulfilled") combined = combined.concat(r.value);
-    else errors.push(cfg.sources[i].sheetName + ": " + r.reason.message);
+    const source = cfg.sources[i];
+    if (r.status === "fulfilled") {
+      const joined = r.value.map((apiRow) => joinApiRowWithLookup(apiRow, lookupMap, source));
+      unclassifiedSpend += sum(joined.filter((row) => row.unclassified), "spend");
+      combined = combined.concat(joined);
+    } else {
+      errors.push(`Meta Ads (${source.property}): ${r.reason.message}`);
+    }
   });
+
+  if (unclassifiedSpend > 0) {
+    errors.push(`Hay ${fmtMoney(unclassifiedSpend)} de inversión en campañas que no están en "Concatenado campañas" — aparecen como "Sin clasificar" hasta que se agreguen ahí.`);
+  }
 
   if (kommoResult.status === "fulfilled") {
     state.kommoLeads = kommoResult.value;
@@ -2268,15 +2308,18 @@ function renderTopAds(rows, s, prop) {
 }
 
 // Etiquetas visuales para distinguir de un vistazo el canal (WhatsApp vs.
-// Leadform) y la etapa (Awareness vs. Conversion) de cada campaña.
+// Leadform) y la etapa (Awareness vs. Conversion) de cada campaña. Una
+// campaña que aún no está en "Concatenado campañas" se resalta en naranja.
 function objectiveBadgeHtml(objective) {
   const o = normalizeText(objective);
+  if (o === "SIN CLASIFICAR") return '<span class="tag tag-unclassified">⚠ Sin clasificar</span>';
   if (o === "MENSAJES") return '<span class="tag tag-whatsapp">WhatsApp</span>';
   if (o === "LEADFORM") return '<span class="tag tag-leadform">Leadform</span>';
   return `<span class="tag">${escapeHtml(objective || "—")}</span>`;
 }
 function funnelBadgeHtml(funnel) {
   const f = normalizeText(funnel);
+  if (f === "SIN CLASIFICAR") return '<span class="tag tag-unclassified">⚠ Sin clasificar</span>';
   if (f === "AWARENESS") return '<span class="tag tag-awareness">Awareness</span>';
   return `<span class="tag tag-conversion">${escapeHtml(funnel || "—")}</span>`;
 }
