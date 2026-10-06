@@ -697,6 +697,14 @@ function fetchSheetTab(spreadsheetId, sheetName) {
     window[cbName] = (resp) => {
       settled = true;
       cleanup();
+      // Cuando Google no deja leer el Sheet responde {status:"error", errors:[...]} SIN tabla.
+      // Antes eso pasaba como si fuera válido y rompía después con "reading 'cols'".
+      if (!resp || resp.status === "error" || !resp.table) {
+        const e0 = resp && resp.errors && resp.errors[0];
+        const reason = (e0 && (e0.detailed_message || e0.message || e0.reason)) || "sin detalle";
+        reject(new Error(`Google no entregó la pestaña "${sheetName}" (${reason}). Casi siempre es porque el Sheet no está compartido como "Cualquiera con el enlace" o el navegador no envía tu sesión de Google. Solución definitiva: activar /api/sheet-data (ver SETUP_SHEET_API.md).`));
+        return;
+      }
       resolve(resp);
     };
 
@@ -733,6 +741,33 @@ async function fetchSheetTabWithRetry(spreadsheetId, sheetName, attempts = 3) {
     }
   }
   throw lastError;
+}
+
+// Lee una pestaña del Sheet. Primero intenta /api/sheet-data (función serverless que lee
+// el Sheet con una cuenta de servicio: no depende de que el Sheet sea público ni de la
+// sesión de Google del navegador, y no expone columnas con datos personales). Si esa
+// función aún no está configurada (501) o no existe (404), usa el método anterior (gviz).
+async function loadSheetData(kind, spreadsheetId, sheetName) {
+  let apiProblem = null;
+  try {
+    const resp = await fetch(`/api/sheet-data?tab=${encodeURIComponent(kind)}`);
+    if (resp.ok) {
+      const json = await resp.json();
+      if (json && json.table) return json;
+      apiProblem = "/api/sheet-data respondió sin tabla";
+    } else if (resp.status !== 501 && resp.status !== 404) {
+      let detail = "";
+      try { detail = (await resp.json()).error || ""; } catch (e) { /* sin cuerpo */ }
+      apiProblem = `/api/sheet-data respondió ${resp.status}${detail ? ": " + detail : ""}`;
+    }
+  } catch (e) {
+    // error de red hacia nuestra propia API: se intenta gviz
+  }
+  try {
+    return await fetchSheetTabWithRetry(spreadsheetId, sheetName);
+  } catch (err) {
+    throw new Error(apiProblem ? `${err.message} · ${apiProblem}` : err.message);
+  }
 }
 
 // Trae el desempeño de una plaza directo de nuestra función serverless
@@ -985,13 +1020,13 @@ function joinApiRowWithLookup(apiRow, lookupMap, source) {
 async function loadAllData() {
   const cfg = DASHBOARD_CONFIG;
   const [lookupResult, metaResults, kommoResult] = await Promise.all([
-    fetchSheetTabWithRetry(cfg.campaignLookup.spreadsheetId, cfg.campaignLookup.sheetName)
+    loadSheetData("catalog", cfg.campaignLookup.spreadsheetId, cfg.campaignLookup.sheetName)
       .then((r) => ({ status: "fulfilled", value: normalizeCampaignLookup(r) }))
       .catch((err) => ({ status: "rejected", reason: err })),
     Promise.allSettled(
       cfg.sources.map((s) => fetchMetaPerformance(s.property, cfg.metaApiLookbackDays))
     ),
-    fetchSheetTabWithRetry(cfg.kommoLeads.spreadsheetId, cfg.kommoLeads.sheetName)
+    loadSheetData("kommo", cfg.kommoLeads.spreadsheetId, cfg.kommoLeads.sheetName)
       .then((r) => ({ status: "fulfilled", value: normalizeKommoLeads(r) }))
       .catch((err) => ({ status: "rejected", reason: err })),
   ]);
@@ -1536,8 +1571,10 @@ function fillSelect(id, options, allLabel) {
     options.map((o) => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join("");
 }
 
+// Formatea con la fecha LOCAL (no UTC): con toISOString(), un "23:59:59" de hora
+// de México se mostraba como el día siguiente (ej. "Mes pasado" terminaba en 01/10).
 function toInputDate(d) {
-  return d.toISOString().slice(0, 10);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 function applyFilters() {
